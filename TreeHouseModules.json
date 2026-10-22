@@ -35,11 +35,11 @@
       "InternalName": "LKami9FolkloreBooks",
       "Name": "LKami9秘录助手",
       "Author": "LKami9",
-      "Description": "列出已使用 / 未使用的传承录与秘籍，显示兑换材料、持有量与缺口，材料名可点击复制。",
-      "Version": "1.0.1",
-      "MinimumOmniVersion": "1.1.3.0",
+      "Description": "独立窗口 + /L9ML 短命令：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口，支持自动使用，材料名可点击复制。",
+      "Version": "1.0.2",
+      "MinimumOmniVersion": "1.1.7.0",
       "File": "Modules/LKami9FolkloreBooks.cs",
-      "Sha256": "9CB01388C5CC941A500D432131789418DD6B9F1937516C867237D0BC53B0C52D"
+      "Sha256": "A5952CD59B7784CFB456DD1ECBB65B35E0539D859B9A03D627713A5DFA2BC17C"
     }
   ]
 }
