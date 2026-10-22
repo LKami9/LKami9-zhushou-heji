@@ -15,11 +15,11 @@
       "InternalName": "LKami9GlamourHelper",
       "Name": "LKami9幻化助手",
       "Author": "LKami9",
-      "Description": "从石之家幻化截图识别装备与染剂；支持持有与来源、模板写入/应用、本地试穿和 Omni 预设管理。独立窗口、表格、预设列表和角色快捷栏统一使用 Omni 深色底板与自计数样式作用域；预设列表加入缓存与可见项裁剪。",
-      "Version": "1.18.0.0",
+      "Description": "独立窗口（识别与装备 / 幻化预设）+ /L9HH 短命令：识别石之家截图、显示持有与获取方式、写入/应用幻化模板、本地试穿；整合 Omni「更好的幻化管理」预设编辑、发型/眼镜、套装自动试穿；角色快捷栏可拖拽并与 Omni 窗口同侧，窗口底板随主题明暗自适应。",
+      "Version": "1.19.0.0",
       "MinimumOmniVersion": "1.1.7.0",
       "File": "Modules/LKami9GlamourHelper.cs",
-      "Sha256": "9FA9FC96F817A1E15F69F35B2D8FDFFB54845139B8EF733A1B55A0546CE698F7"
+      "Sha256": "A6B6113D66073851F9AEC762FA3798FDF3BCADC24D6F9026781CE2D2D57162BC"
     },
     {
       "InternalName": "LKami9TriadCardPacks",

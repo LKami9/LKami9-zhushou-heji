@@ -9,7 +9,9 @@ using System.Text.Json;
 using System.Threading.Tasks;
 
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Command;
 using Dalamud.Interface.Textures;
+using Dalamud.Plugin.Services;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 
@@ -42,24 +44,40 @@ namespace LKami9.GlamourHelper;
 ///
 /// 输入方式：剪贴板图片 或 图片文件路径。
 /// 识别引擎：Windows 自带 OCR（Windows.Media.Ocr），离线、零安装，经内嵌的 PowerShell 脚本调用。
-/// 关联算法：用 OCR 的坐标把染剂挂到对应装备上（详见 DrawSettings / ParseOcrJson 的注释）。
+/// 关联算法：用 OCR 的坐标把染剂挂到对应装备上（详见 ParseOcrJson 的注释）。
+///
+/// 界面：独立窗口两页（识别与装备 / 幻化预设），短命令 /L9HH（重新识别 / open / window / close）。
+///   窗口底板随主题明暗自适应：深色主题通深，浅色主题用主题主色做实板；
+///   角色查看窗口旁的快捷栏可拖拽解除跟随，并与 Omni「更好的幻化管理」保持同侧。
+///
+/// 线程模型：后台只跑 PowerShell 和读文件；游戏内存读取（持有量）与
+///   results / unknowns 赋值全部在框架线程完成（ApplyPendingOcr）。
 /// </summary>
 public sealed class LKami9GlamourHelper : ModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
         Title       = "LKami9幻化助手",
-        Description = "独立窗口版幻化助手：识别石之家截图、显示持有与获取方式、写入/应用幻化模板，并整合 Omni「更好的幻化管理」的预设编辑、发型/眼镜、套装自动试穿；角色查看窗口旁提供试穿、保存、复制和打开主窗口快捷栏。",
+        Description = "独立窗口（识别与装备 / 幻化预设）+ /L9HH 短命令：识别石之家截图、显示持有与获取方式、写入/应用幻化模板、本地试穿；整合 Omni「更好的幻化管理」预设编辑、发型/眼镜、套装自动试穿；角色快捷栏可拖拽并与 Omni 窗口同侧，窗口底板随主题明暗自适应。",
         Category    = ModuleCategory.Item,
         Author      = "LKami9",
         Commands    =
         [
-            new("打开幻化助手窗口", "/omni LKami9GlamourHelper open"),
-            new("用上次的图重新识别", "/omni LKami9GlamourHelper scan"),
+            new("重新识别（用上次的图）", "/L9HH"),
+            new("打开幻化助手窗口",      "/L9HH open"),
+            new("打开 / 关闭窗口",       "/L9HH window"),
+            new("关闭窗口",             "/L9HH close"),
+            new("打开幻化助手窗口（旧入口）", "/omni LKami9GlamourHelper open"),
+            new("重新识别（旧入口）",       "/omni LKami9GlamourHelper scan"),
         ],
     };
 
     public override bool HasSettings => true;
+
+    private const string ShortCommand = "/L9HH";
+
+    private ICommandManager? shortCommandManager;
+    private bool shortCommandRegistered;
 
     // 宿主按「以 Config 结尾的成员」绑定已保存的配置；不能是 readonly
     private LKami9GlamourHelperConfig config = new();
@@ -100,6 +118,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
     private bool mainWindowCollapsed;
     private bool mainWindowResizePending;
     private System.Numerics.Vector2 mainWindowExpandedSize;
+    private bool quickActionsDragging;   // 角色快捷栏自由拖拽中
 
     // ── Omni 幻化管理整合 ──
     private int selectedPresetIndex = -1;
@@ -179,6 +198,8 @@ public sealed class LKami9GlamourHelper : ModuleBase
             this.standaloneUiHooked = true;
         }
         catch (Exception ex) { DalamudServices.PluginLog.Information(ex, "[幻化助手] 注册独立窗口失败"); }
+
+        this.RegisterShortCommand();
     }
 
     protected override void OnDisable()
@@ -205,7 +226,47 @@ public sealed class LKami9GlamourHelper : ModuleBase
         this.lastGearsetIndex = int.MinValue;
         this.activePresetIndex = -1;
         this.activePresetFromGearset = false;
+        this.pendingOcrJson = null;   // 防止重启模块后应用上一轮遗留的识别结果
+        this.UnregisterShortCommand();
     }
+
+    private void RegisterShortCommand()
+    {
+        try
+        {
+            this.shortCommandManager =
+                DalamudServices.PluginInterface.GetService(typeof(ICommandManager)) as ICommandManager;
+            if (this.shortCommandManager == null)
+            {
+                DalamudServices.PluginLog.Information("[幻化助手] 找不到命令服务，/L9HH 未注册");
+                return;
+            }
+
+            this.shortCommandRegistered = this.shortCommandManager.AddHandler(
+                ShortCommand,
+                new CommandInfo(this.OnShortCommand)
+                {
+                    HelpMessage = "LKami9 幻化助手：/L9HH [open|close|window|scan]",
+                });
+        }
+        catch (Exception ex)
+        {
+            this.shortCommandRegistered = false;
+            DalamudServices.PluginLog.Warning(ex, "[幻化助手] 注册 /L9HH 失败");
+        }
+    }
+
+    private void UnregisterShortCommand()
+    {
+        if (!this.shortCommandRegistered) return;
+        try { this.shortCommandManager?.RemoveHandler(ShortCommand); }
+        catch { }
+        this.shortCommandRegistered = false;
+        this.shortCommandManager = null;
+    }
+
+    private void OnShortCommand(string command, string arguments) =>
+        this.TryHandleCommand(arguments);
 
     protected override void OnDispose()
     {
@@ -301,12 +362,6 @@ public sealed class LKami9GlamourHelper : ModuleBase
             ImGui.EndTabItem();
         }
 
-        if (ImGui.BeginTabItem("试穿与模板"))
-        {
-            DrawTryOnPlateTab();
-            ImGui.EndTabItem();
-        }
-
         if (ImGui.BeginTabItem("幻化预设"))
         {
             DrawPresetTab();
@@ -340,14 +395,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
         DrawInputSection();
         ImGui.Separator();
         DrawResultSection();
-        ImGui.EndChild();
-    }
-
-    private void DrawTryOnPlateTab()
-    {
-        ImGui.BeginChild("###tryOnPlateTab", System.Numerics.Vector2.Zero, false, ImGuiWindowFlags.None);
-        DrawPlateSection();
-        DrawTryOnSection();
+        DrawResultActionsSection();
         ImGui.EndChild();
     }
 
@@ -388,23 +436,27 @@ public sealed class LKami9GlamourHelper : ModuleBase
     {
         var tokens = OmniTheme.Tokens;
         var panel = PanelColor(tokens);
+        var board = BoardColor(tokens);
+        var light = !OmniTheme.UsesDarkPalette;
         var textDisabled = tokens.Text with { W = tokens.Text.W * 0.55f };
         var titleBackground = System.Numerics.Vector4.Lerp(tokens.Background, tokens.Primary, 0.35f);
         var titleActive = System.Numerics.Vector4.Lerp(tokens.Background, tokens.Accent, 0.65f);
 
-        style.Color(ImGuiCol.WindowBg, panel);
+        style.Color(ImGuiCol.WindowBg, board);
         style.Color(ImGuiCol.ChildBg, System.Numerics.Vector4.Zero);
         style.Color(ImGuiCol.PopupBg, panel);
         style.Color(ImGuiCol.Border, tokens.Border);
         style.Color(ImGuiCol.Text, tokens.Text);
         style.Color(ImGuiCol.TextDisabled, textDisabled);
-        style.Color(ImGuiCol.Button, tokens.Surface);
+        // 浅色主题的底板是主题主色（橄榄/粉），按钮和输入框用提亮色才跳得出来；
+        // 深色主题维持 Omni 默认的 Surface 方案
+        style.Color(ImGuiCol.Button, light ? tokens.Accent with { W = 1f } : tokens.Surface);
         style.Color(ImGuiCol.ButtonHovered, OmniTheme.HoverBackground);
         style.Color(ImGuiCol.ButtonActive, OmniTheme.ActiveBackground);
         style.Color(ImGuiCol.Header, panel);
         style.Color(ImGuiCol.HeaderHovered, OmniTheme.HoverBackground);
         style.Color(ImGuiCol.HeaderActive, tokens.Surface);
-        style.Color(ImGuiCol.FrameBg, tokens.Surface);
+        style.Color(ImGuiCol.FrameBg, light ? tokens.Background with { W = 1f } : tokens.Surface);
         style.Color(ImGuiCol.FrameBgHovered, OmniTheme.HoverBackground);
         style.Color(ImGuiCol.FrameBgActive, OmniTheme.ActiveBackground);
         style.Color(ImGuiCol.Tab, tokens.Surface);
@@ -413,7 +465,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
         style.Color(ImGuiCol.TitleBg, titleBackground);
         style.Color(ImGuiCol.TitleBgActive, titleActive);
         style.Color(ImGuiCol.TitleBgCollapsed, titleBackground);
-        style.Color(ImGuiCol.ScrollbarBg, panel);
+        style.Color(ImGuiCol.ScrollbarBg, board);
         style.Color(ImGuiCol.ScrollbarGrab, tokens.Secondary);
         style.Color(ImGuiCol.ScrollbarGrabHovered, OmniTheme.HoverBackground);
         style.Color(ImGuiCol.ScrollbarGrabActive, tokens.Accent);
@@ -424,7 +476,8 @@ public sealed class LKami9GlamourHelper : ModuleBase
         style.Color(ImGuiCol.ResizeGrip, tokens.Surface);
         style.Color(ImGuiCol.ResizeGripHovered, OmniTheme.HoverBackground);
         style.Color(ImGuiCol.ResizeGripActive, tokens.Accent);
-        style.Color(ImGuiCol.TableRowBg, panel);
+        // 表格斑马纹：奇数行透明（露出底板），偶数行用提亮面板
+        style.Color(ImGuiCol.TableRowBg, System.Numerics.Vector4.Zero);
         style.Color(ImGuiCol.TableRowBgAlt, panel);
         style.Color(ImGuiCol.TableHeaderBg, panel);
 
@@ -438,8 +491,54 @@ public sealed class LKami9GlamourHelper : ModuleBase
         style.Var(ImGuiStyleVar.FramePadding, OmniTheme.Scale(new System.Numerics.Vector2(6f, 4f)));
     }
 
+    /// <summary>
+    /// 窗口内容底板：深色主题用 Background/Surface 混合（通深）；
+    /// 浅色主题（LineGreen / LinePeachBloom）用主题主色 Primary 做实板，
+    /// 否则整窗口是一片奶油色、没有层次（用户反馈「太亮」「缺深色背景板」）。
+    /// </summary>
+    private static System.Numerics.Vector4 BoardColor(OmniToolbox.UI.Theme.ThemeTokens tokens) =>
+        OmniTheme.UsesDarkPalette
+            ? System.Numerics.Vector4.Lerp(tokens.Background with { W = 1f }, tokens.Surface with { W = 1f }, 0.5f)
+            : tokens.Primary with { W = 1f };
+
+    /// <summary>内嵌面板（列表框、表头、子卡片）：比底板亮一档，做出层次。</summary>
     private static System.Numerics.Vector4 PanelColor(OmniToolbox.UI.Theme.ThemeTokens tokens) =>
-        System.Numerics.Vector4.Lerp(tokens.Background with { W = 1f }, tokens.Surface with { W = 1f }, 0.5f);
+        OmniTheme.UsesDarkPalette
+            ? System.Numerics.Vector4.Lerp(tokens.Background with { W = 1f }, tokens.Surface with { W = 1f }, 0.5f)
+            : System.Numerics.Vector4.Lerp(tokens.Primary with { W = 1f }, tokens.Background with { W = 1f }, 0.22f);
+
+    /// <summary>
+    /// 画窗口底板：软投影 + 实体填充 + 细描边。
+    /// 仿 Omni MaterialPainter 的非玻璃路径（该类是 internal，模块用不了，这里用公开接口复刻同等观感）。
+    /// </summary>
+    private static void FillWindowBoard(
+        ImDrawListPtr draw,
+        System.Numerics.Vector2 pos,
+        System.Numerics.Vector2 size,
+        System.Numerics.Vector4 color,
+        float radius)
+    {
+        if (size.X <= 1f || size.Y <= 1f)
+            return;
+
+        var tokens = OmniTheme.Tokens;
+        var shadowOffset = OmniTheme.Scale(new System.Numerics.Vector2(0f, 2f));
+        draw.AddRectFilled(
+            pos + shadowOffset,
+            pos + size + shadowOffset,
+            ImGui.GetColorU32(tokens.Shadow),
+            radius);
+
+        draw.AddRectFilled(pos, pos + size, ImGui.GetColorU32(color with { W = 1f }), radius);
+
+        draw.AddRect(
+            pos,
+            pos + size,
+            ImGui.GetColorU32(tokens.Border with { W = MathF.Max(tokens.Border.W, 0.25f) }),
+            radius,
+            0,
+            MathF.Max(OmniTheme.BorderThickness(), 1f));
+    }
 
     private sealed class OmniStyleScope : IDisposable
     {
@@ -521,10 +620,11 @@ public sealed class LKami9GlamourHelper : ModuleBase
                 var framePosition = ImGui.GetWindowPos();
                 var frameSize = ImGui.GetWindowSize();
                 var tokens = OmniTheme.Tokens;
-                ImGui.GetWindowDrawList().AddRectFilled(
+                FillWindowBoard(
+                    ImGui.GetWindowDrawList(),
                     framePosition,
-                    framePosition + frameSize,
-                    ImGui.GetColorU32(PanelColor(tokens)),
+                    frameSize,
+                    BoardColor(tokens),
                     OmniTheme.Scale(tokens.BorderRadius));
                 var chrome = OmniWindowChrome.Draw(
                     framePosition,
@@ -617,13 +717,16 @@ public sealed class LKami9GlamourHelper : ModuleBase
                             betterAddon->WindowNode != null;
         var betterPosition = System.Numerics.Vector2.Zero;
         var betterSize = System.Numerics.Vector2.Zero;
-        var preferLeft = false;
+        // 与 Omni「更好的幻化管理」保持同一侧：它在左我们也在左，它在右我们也在右
+        // （旧逻辑是故意错开，用户要求同侧）；Omni 窗口没开时默认靠左，和它平常的位置一致
+        var preferLeft = true;
         if (betterVisible)
         {
             var betterState = betterAddon->WindowNode->GetNodeState();
             betterPosition = betterState.TopLeft;
             betterSize = new System.Numerics.Vector2(betterState.Width, betterState.Height);
-            preferLeft = betterState.TopLeft.X + betterState.Width * 0.5f >= inspectCenter;
+            var betterCenterX = betterState.TopLeft.X + betterState.Width * 0.5f;
+            preferLeft = betterCenterX < inspectCenter;
         }
 
         var right = new System.Numerics.Vector2(inspectRight + gap, inspectCenterY);
@@ -635,25 +738,27 @@ public sealed class LKami9GlamourHelper : ModuleBase
             inspectState.TopLeft.X + (inspectState.Width - overlaySize.X) * 0.5f,
             inspectState.TopLeft.Y + inspectState.Height + gap);
 
-        Span<System.Numerics.Vector2> candidates = stackalloc System.Numerics.Vector2[4];
-        if (preferLeft)
+        // 同侧堆叠位：首选侧被 Omni 窗口占住时，贴到它下面 / 上面，仍保持同一侧
+        var stackX = preferLeft ? left.X : right.X;
+        var stackBelow = new System.Numerics.Vector2(stackX, betterPosition.Y + betterSize.Y + gap);
+        var stackAbove = new System.Numerics.Vector2(stackX, betterPosition.Y - overlaySize.Y - gap);
+
+        Span<System.Numerics.Vector2> candidates = stackalloc System.Numerics.Vector2[6];
+        var count = 0;
+        candidates[count++] = preferLeft ? left : right;
+        if (betterVisible)
         {
-            candidates[0] = left;
-            candidates[1] = below;
-            candidates[2] = above;
-            candidates[3] = right;
+            candidates[count++] = stackBelow;
+            candidates[count++] = stackAbove;
         }
-        else
-        {
-            candidates[0] = right;
-            candidates[1] = below;
-            candidates[2] = above;
-            candidates[3] = left;
-        }
+        candidates[count++] = below;
+        candidates[count++] = above;
+        candidates[count++] = preferLeft ? right : left;
 
         System.Numerics.Vector2? chosen = null;
-        foreach (var candidate in candidates)
+        for (var i = 0; i < count; i++)
         {
+            var candidate = candidates[i];
             if (!IsOverlayInside(candidate, overlaySize, min, max))
                 continue;
             if (betterVisible &&
@@ -666,8 +771,9 @@ public sealed class LKami9GlamourHelper : ModuleBase
 
         if (chosen == null)
         {
-            foreach (var candidate in candidates)
+            for (var i = 0; i < count; i++)
             {
+                var candidate = candidates[i];
                 if (!IsOverlayInside(candidate, overlaySize, min, max))
                     continue;
 
@@ -682,7 +788,21 @@ public sealed class LKami9GlamourHelper : ModuleBase
             min,
             System.Numerics.Vector2.Max(min, max - overlaySize));
 
-        ImGui.SetNextWindowPos(position, ImGuiCond.Always);
+        if (this.config.QuickActionsFree)
+        {
+            // 自由拖拽模式：位置由用户拖动决定（跨重启保留），并夹在视口内
+            var freePos = this.config.QuickActionsPos == System.Numerics.Vector2.Zero
+                ? position
+                : this.config.QuickActionsPos;
+            ImGui.SetNextWindowPos(
+                System.Numerics.Vector2.Clamp(freePos, min, System.Numerics.Vector2.Max(min, max - overlaySize)),
+                ImGuiCond.Always);
+        }
+        else
+        {
+            ImGui.SetNextWindowPos(position, ImGuiCond.Always);
+        }
+
         ImGui.SetNextWindowSize(overlaySize, ImGuiCond.Always);
         var show = this.config.ShowInspectQuickActions;
         using var style = new OmniStyleScope();
@@ -699,40 +819,121 @@ public sealed class LKami9GlamourHelper : ModuleBase
                     ImGuiWindowFlags.NoSavedSettings |
                     ImGuiWindowFlags.NoScrollbar))
             {
+                var framePosition = ImGui.GetWindowPos();
+                var frameSize = ImGui.GetWindowSize();
+                var tokens = OmniTheme.Tokens;
+                FillWindowBoard(
+                    ImGui.GetWindowDrawList(),
+                    framePosition,
+                    frameSize,
+                    BoardColor(tokens),
+                    OmniTheme.Scale(tokens.BorderRadius));
+
+                // 拖拽交互：跟随模式下拖标题栏 → 解除跟随并接着拖动；自由模式下拖标题栏 → 移动窗口
+                var titleHeight = OmniTheme.TitleBarHeight();
+                var inTitle = ImGui.IsWindowHovered() &&
+                              ImGui.GetIO().MousePos.Y < framePosition.Y + titleHeight &&
+                              !ImGui.IsAnyItemHovered();
+
+                if (!this.config.QuickActionsFree)
+                {
+                    // 与主窗口「拖标题栏解除贴靠」同手势：解除跟随，当前拖动继续生效
+                    if (inTitle && ImGui.IsMouseDragging(ImGuiMouseButton.Left, OmniTheme.Scale(3f)))
+                    {
+                        this.config.QuickActionsFree = true;
+                        this.config.QuickActionsPos = framePosition;
+                        this.quickActionsDragging    = true;
+                    }
+                }
+                else
+                {
+                    if (this.quickActionsDragging)
+                    {
+                        if (ImGui.IsMouseDown(ImGuiMouseButton.Left))
+                        {
+                            var delta = ImGui.GetIO().MouseDelta;
+                            if (delta.X != 0f || delta.Y != 0f)
+                                this.config.QuickActionsPos = System.Numerics.Vector2.Clamp(
+                                    this.config.QuickActionsPos + delta,
+                                    min,
+                                    System.Numerics.Vector2.Max(min, max - overlaySize));
+                        }
+                        else
+                        {
+                            this.quickActionsDragging = false;
+                        }
+                    }
+                    else if (inTitle && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+                    {
+                        this.quickActionsDragging = true;
+                    }
+                }
+
                 ImGui.TextColored(OmniTheme.Tokens.Text, "角色查看");
+
+                // 标题行右侧按钮：自由模式下多一个「跟随」（重新贴住角色查看窗口）
+                var hideWidth = ImGui.CalcTextSize("隐藏").X + ImGui.GetStyle().FramePadding.X * 2f;
+                var showFollow = this.config.QuickActionsFree;
+                var followWidth = showFollow
+                    ? ImGui.CalcTextSize("跟随").X + ImGui.GetStyle().FramePadding.X * 2f
+                    : 0f;
+                var buttonsWidth = followWidth + (showFollow ? ImGui.GetStyle().ItemSpacing.X : 0f) + hideWidth;
+
                 ImGui.SameLine();
                 ImGui.SetCursorPosX(
-                    ImGui.GetWindowWidth() -
-                    ImGui.GetStyle().WindowPadding.X -
-                    ImGui.CalcTextSize("隐藏").X -
-                    ImGui.GetStyle().FramePadding.X * 2f);
+                    MathF.Max(1f, ImGui.GetWindowWidth() - ImGui.GetStyle().WindowPadding.X - buttonsWidth));
+                if (showFollow)
+                {
+                    if (ImGui.SmallButton("跟随###quickActionsFollow"))
+                    {
+                        this.config.QuickActionsFree = false;
+                        this.quickActionsDragging    = false;
+                    }
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("重新跟随角色查看窗口");
+                    ImGui.SameLine();
+                }
+
                 if (ImGui.SmallButton("隐藏###hideInspectQuickActions"))
                     show = false;
+
                 ImGui.Separator();
 
                 var spacing = ImGui.GetStyle().ItemSpacing.X;
                 var buttonWidth = (ImGui.GetContentRegionAvail().X - spacing) * 0.5f;
-                if (ImGui.Button("试穿角色###inspectTryOn", new System.Numerics.Vector2(buttonWidth, 0)))
+                var buttonSize = new System.Numerics.Vector2(buttonWidth, OmniTheme.Scale(30f));
+
+                if (ImGui.Button("试穿角色###inspectTryOn", buttonSize))
                     this.TryOnInspectedCharacter();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("按角色查看窗口里的幻化本地试穿（只影响自己看到的外观）");
                 ImGui.SameLine();
-                if (ImGui.Button("保存预设###inspectSave", new System.Numerics.Vector2(buttonWidth, 0)))
+                if (ImGui.Button("保存预设###inspectSave", buttonSize))
                     this.AddPresetFromCharacterInspect();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("把当前角色查看窗口的幻化存成一条预设");
 
-                if (ImGui.Button("复制分享###inspectShare", new System.Numerics.Vector2(buttonWidth, 0)))
+                if (ImGui.Button("复制分享###inspectShare", buttonSize))
                     this.CopyInspectedPresetToClipboard();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("复制 Omni 兼容的分享文本");
                 ImGui.SameLine();
-                if (ImGui.Button("打开助手###inspectOpen", new System.Numerics.Vector2(buttonWidth, 0)))
+                if (ImGui.Button("打开助手###inspectOpen", buttonSize))
                     this.OpenMainWindow();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("打开幻化助手主窗口");
 
-                if (ImGui.Button("清除试穿###inspectClear", new System.Numerics.Vector2(-1f, 0)))
+                if (ImGui.Button("清除试穿###inspectClear", new System.Numerics.Vector2(-1f, buttonSize.Y)))
                     this.StopTryOn(clear: true);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("还原本地试穿，恢复角色真实外观");
 
                 if (!string.IsNullOrEmpty(this.presetStatus))
                 {
                     var shortStatus = this.presetStatus.Length > 20
                         ? this.presetStatus[..20] + "…"
                         : this.presetStatus;
-                    ImGui.TextDisabled(shortStatus);
+                    ImGui.TextColored(OmniTheme.Tokens.Text with { W = OmniTheme.Tokens.Text.W * 0.75f }, shortStatus);
                     if (ImGui.IsItemHovered())
                         ImGui.SetTooltip(this.presetStatus);
                 }
@@ -884,6 +1085,9 @@ public sealed class LKami9GlamourHelper : ModuleBase
         if (this.results.Count == 0)
         {
             DrawSectionTitle("识别结果", "还没有读取到装备");
+            ImGui.TextDisabled(
+                "在游戏里打开石之家「幻化」界面，按 PrintScreen 截图（或保存成图片文件），"
+                + "然后点上面的「从剪贴板识别」，或填路径后点「识别这个文件」。");
             return;
         }
 
@@ -1488,6 +1692,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
         finally { this.busy = false; }
     }
 
+    /// <summary>后台线程只做重活：PowerShell OCR + 读文件。结果文本入队，由框架线程应用。</summary>
     private async Task RecognizeInternal(string imagePath)
     {
         var sw = Stopwatch.StartNew();
@@ -1505,15 +1710,57 @@ public sealed class LKami9GlamourHelper : ModuleBase
             return;
         }
 
-        var ocrMs = sw.ElapsedMilliseconds;
+        string text;
         try
         {
-            var text = await File.ReadAllTextAsync(json, Encoding.UTF8);
-            BuildIndexIfNeeded();
-            var parsed = ParseOcrJson(text);
+            text = await File.ReadAllTextAsync(json, Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            this.statusIsError = true;
+            this.status = "读取 OCR 结果失败：" + ex.Message;
+            return;
+        }
+
+        // 解析要读游戏内存（持有量）并改 results / unknowns，只能放在框架线程：
+        // 后台线程读 InventoryManager 有 native 竞态风险，且边画边改 List 会炸绘制线程。
+        this.pendingOcrJson = text;
+        this.pendingOcrSw   = sw;
+        this.status         = "正在解析识别结果…";
+    }
+
+    private volatile string? pendingOcrJson;
+    private Stopwatch? pendingOcrSw;
+
+    /// <summary>框架线程应用 OCR 结果：游戏状态读取与 UI 状态更新都在这里完成。</summary>
+    private void ApplyPendingOcr()
+    {
+        var text = this.pendingOcrJson;
+        var sw   = this.pendingOcrSw;
+        if (text == null) return;
+        this.pendingOcrJson = null;
+        this.pendingOcrSw   = null;
+
+        var ocrMs = sw?.ElapsedMilliseconds ?? 0;
+        try
+        {
+            // 纯文本匹配（索引构建 + OCR 关联）已在后台线程完成，这里只补游戏状态
+            var parsed = this.MatchOcrText(text, out var unknownList);
+
+            this.dyeOwnedCache.Clear();   // 每次识别重新统计染剂持有量
+            foreach (var r in parsed)
+            {
+                r.Owned      = this.CountOwned(r.ItemId, out var whereOwned);
+                r.OwnedWhere = whereOwned;
+                r.Source     = string.Join(" / ", this.GetSources(r.ItemId));
+            }
+
             this.results.Clear();
             this.results.AddRange(parsed);
-            var needFix = parsed.Count(r => r.NeedsReview);
+            this.unknowns.Clear();
+            this.unknowns.AddRange(unknownList);
+
+            var needFix  = parsed.Count(r => r.NeedsReview);
             var unknownN = this.unknowns.Count;
             this.statusIsError = false;
             this.status = parsed.Count > 0
@@ -1521,7 +1768,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
                   (needFix > 0 ? $"，其中 {needFix} 件是模糊匹配（打 ?，可点「改」修改）" : "，全部精确匹配") +
                   (unknownN > 0 && this.config.ShowUnknowns ? $"，另有 {unknownN} 段未识别文本可手动指派" : "")
                 : "识别完成，但没找到任何装备名 —— 请确认截图里包含装备清单（带装备名的那块）。";
-            this.lastTiming = $"(OCR {ocrMs} ms / 匹配 {sw.ElapsedMilliseconds - ocrMs} ms)";
+            this.lastTiming = $"(OCR {ocrMs} ms / 匹配 {(sw?.ElapsedMilliseconds ?? 0) - ocrMs} ms)";
         }
         catch (Exception ex)
         {
@@ -1557,7 +1804,12 @@ public sealed class LKami9GlamourHelper : ModuleBase
             if (p == null) return (false, "无法启动 PowerShell");
             var so = await p.StandardOutput.ReadToEndAsync();
             var se = await p.StandardError.ReadToEndAsync();
-            p.WaitForExit(60000);
+            if (!p.WaitForExit(60000))
+            {
+                // 超时不杀会漏孤儿 powershell 进程（每次超时漏一个）
+                try { p.Kill(true); } catch { }
+                return (false, "OCR 超时（60 秒）");
+            }
 
             // 脚本自己写的错误日志（UTF-8，不受控制台代码页影响）
             var log = Path.Combine(WorkDir(), "last_error.txt");
@@ -1579,12 +1831,19 @@ public sealed class LKami9GlamourHelper : ModuleBase
     //  引擎：OCR JSON → 槽位 / 装备 / 染剂
     // ══════════════════════════════════════════════════════════
 
-    private List<SlotResult> ParseOcrJson(string json)
+    /// <summary>
+    /// 后台线程安全：只做纯文本匹配（构建索引 + OCR 关联）。
+    /// 不碰游戏内存、不碰 results / unknowns / dyeOwnedCache —— 那些在框架线程的 ApplyPendingOcr 里做。
+    /// </summary>
+    private List<SlotResult> MatchOcrText(string json, out List<UnknownFragment> unknowns)
     {
         LoadOmniCache();   // 先载入 OmniToolbox 的角色数据缓存（投影台/收藏柜/雇员/部队箱/房屋仓库）
-        this.dyeOwnedCache.Clear();   // 每次识别重新统计染剂持有量
+        // 索引预载：这两个只读 Lumina / 内嵌资源、最后整体赋值，在后台线程构建是安全的
+        // （避免把整表遍历前移到框架线程造成首次识别卡顿）
+        LoadWikiSources();
+        LoadItemSources();
         var rows = new List<(double X, double Y, uint Id, uint Icon, string Name, string Slot, int Score)>();
-        this.unknowns.Clear();
+        unknowns = new List<UnknownFragment>();
 
         using var doc = JsonDocument.Parse(json);
         foreach (var line in doc.RootElement.GetProperty("lines").EnumerateArray())
@@ -1624,8 +1883,8 @@ public sealed class LKami9GlamourHelper : ModuleBase
             var before = this.pendingDyes.Count;
             CollectDyes(compact, chars);
             if (this.pendingDyes.Count == before && LooksLikeName(compact) && !IsNoiseFragment(compact)
-                && !this.unknowns.Any(u => u.Text == compact))
-                this.unknowns.Add(new UnknownFragment { Text = compact });
+                && !unknowns.Any(u => u.Text == compact))
+                unknowns.Add(new UnknownFragment { Text = compact });
         }
 
         // 结构约束：幻化每个槽位只能一件（戒指可两件）→ 消除误匹配
@@ -1656,6 +1915,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
         this.pendingDyes.Clear();
 
         // 同一装备的染剂按 **X 坐标升序** = 图上的左右顺序（槽1 / 槽2）
+        // 持有量 / 获取方式要读游戏内存和重量级索引，留给框架线程的 ApplyPendingOcr 补
         var list = new List<SlotResult>();
         for (int i = 0; i < chosen.Count; i++)
         {
@@ -1672,9 +1932,6 @@ public sealed class LKami9GlamourHelper : ModuleBase
                 NeedsReview = r.Score < 100,
                 Dyes = dyes,
                 Untradable = this.itemByName!.TryGetValue(r.Name, out var metaRow) && metaRow.Untradable,
-                Owned = CountOwned(r.Id, out var whereOwned),
-                OwnedWhere = whereOwned,
-                Source = string.Join(" / ", GetSources(r.Id)),
             });
         }
         return list.OrderBy(r => Array.IndexOf(SlotOrder, r.Slot)).Select((r, k) => { r.Index = k; return r; }).ToList();
@@ -1886,6 +2143,17 @@ public sealed class LKami9GlamourHelper : ModuleBase
         }
     }
 
+    /// <summary>持有检测要扫的容器（含装备栏：身上正穿的装备不在背包也不在兵装库）。</summary>
+    private static readonly InventoryType[] OwnedContainerTypes =
+    [
+        InventoryType.EquippedItems,
+        InventoryType.Inventory1, InventoryType.Inventory2, InventoryType.Inventory3, InventoryType.Inventory4,
+        InventoryType.ArmoryMainHand, InventoryType.ArmoryOffHand, InventoryType.ArmoryHead,
+        InventoryType.ArmoryBody, InventoryType.ArmoryHands, InventoryType.ArmoryLegs,
+        InventoryType.ArmoryFeets, InventoryType.ArmoryEar, InventoryType.ArmoryNeck,
+        InventoryType.ArmoryWrist, InventoryType.ArmoryRings,
+    ];
+
     /// <summary>返回持有数量（实时扫描 + Omni 缓存），并输出持有位置。</summary>
     private unsafe int CountOwned(uint itemId, out string where)
     {
@@ -1900,19 +2168,9 @@ public sealed class LKami9GlamourHelper : ModuleBase
             var mgr = InventoryManager.Instance();
             if (mgr != null)
             {
-                // 包含装备栏：身上正穿的装备不在背包也不在兵装库
-                var types = new[]
-                {
-                    InventoryType.EquippedItems,
-                    InventoryType.Inventory1, InventoryType.Inventory2, InventoryType.Inventory3, InventoryType.Inventory4,
-                    InventoryType.ArmoryMainHand, InventoryType.ArmoryOffHand, InventoryType.ArmoryHead,
-                    InventoryType.ArmoryBody, InventoryType.ArmoryHands, InventoryType.ArmoryLegs,
-                    InventoryType.ArmoryFeets, InventoryType.ArmoryEar, InventoryType.ArmoryNeck,
-                    InventoryType.ArmoryWrist, InventoryType.ArmoryRings,
-                };
                 var bagCount = 0;
                 var equippedCount = 0;
-                foreach (var type in types)
+                foreach (var type in OwnedContainerTypes)
                 {
                     var cont = mgr->GetInventoryContainer(type);
                     if (cont == null || !cont->IsLoaded) continue;
@@ -1976,11 +2234,35 @@ public sealed class LKami9GlamourHelper : ModuleBase
     private const int PrioDesynth   = 90;   // 分解 / 精炼
     private const int PrioNone      = 99;   // 已无法获得
 
+    private DateTime sourcesFailedAt = DateTime.MinValue;
+
+    /// <summary>带失败保护地构建获取方式索引：失败不缓存半成品，60 秒后退避重试。</summary>
     private unsafe void LoadItemSources()
     {
         if (this.sourcesLoaded) return;
-        this.sourcesLoaded = true;
+        if (DateTime.UtcNow - this.sourcesFailedAt < TimeSpan.FromSeconds(60)) return;
 
+        try
+        {
+            this.BuildItemSourcesCore();
+        }
+        catch (Exception ex)
+        {
+            // 回滚可能已写入的附属表，避免半成品状态被后续使用
+            this.cashShopItems.Clear();
+            this.storeUrls.Clear();
+            this.patchInfo.Clear();
+            this.sourcesLoaded = false;
+            this.sourcesFailedAt = DateTime.UtcNow;
+            DalamudServices.PluginLog.Warning(ex, "[幻化助手] 获取方式索引构建失败（60 秒后重试）");
+            return;
+        }
+
+        this.sourcesLoaded = true;
+    }
+
+    private unsafe void BuildItemSourcesCore()
+    {
         var sw = Stopwatch.StartNew();
         var raw = new Dictionary<uint, List<(int Prio, string Text)>>();
 
@@ -2179,10 +2461,34 @@ public sealed class LKami9GlamourHelper : ModuleBase
     private Dictionary<uint, List<string>> wikiDetails = [];    // 物品 → 来源详情（悬停）
     private bool wikiLoaded;
 
+    private DateTime wikiFailedAt = DateTime.MinValue;
+
+    /// <summary>带失败保护地加载 wiki 获取方式：解析失败不缓存半成品，60 秒后退避重试。</summary>
     private void LoadWikiSources()
     {
         if (this.wikiLoaded) return;
+        if (DateTime.UtcNow - this.wikiFailedAt < TimeSpan.FromSeconds(60)) return;
+
+        try
+        {
+            this.BuildWikiSourcesCore();
+        }
+        catch (Exception ex)
+        {
+            // 丢弃可能已部分写入的表，下次（60 秒后）重试；期间用本地聚合兜底
+            this.wikiTitles = [];
+            this.wikiDetails = [];
+            this.wikiLoaded = false;
+            this.wikiFailedAt = DateTime.UtcNow;
+            DalamudServices.PluginLog.Warning(ex, "[幻化助手] 载入 wiki 获取方式失败（60 秒后重试，暂用本地聚合）");
+            return;
+        }
+
         this.wikiLoaded = true;
+    }
+
+    private void BuildWikiSourcesCore()
+    {
         var sw = Stopwatch.StartNew();
 
         try
@@ -2211,27 +2517,33 @@ public sealed class LKami9GlamourHelper : ModuleBase
                 srcs.Add((n, d));
             }
 
+            // 局部构建、结束才整体赋值：后台线程构建时读取方只会看到旧表或新表，不会看到写一半的表
+            var titleMap = new Dictionary<uint, List<string>>();
+            var detailMap = new Dictionary<uint, List<string>>();
             foreach (var it in itemArr.EnumerateArray())
             {
                 if (!it.TryGetProperty("i", out var idEl) || !it.TryGetProperty("s", out var sArr)) continue;
                 var id = idEl.GetUInt32();
-                var titles = new List<string>();
-                var details = new List<string>();
+                var itemTitles = new List<string>();
+                var itemDetails = new List<string>();
                 foreach (var si in sArr.EnumerateArray())
                 {
                     var idx = si.GetInt32();
                     if (idx < 0 || idx >= srcs.Count) continue;
                     var (n, d) = srcs[idx];
                     if (string.IsNullOrWhiteSpace(n)) continue;
-                    if (!titles.Contains(n)) titles.Add(n);
-                    if (!string.IsNullOrWhiteSpace(d) && !details.Contains(d)) details.Add(d);
+                    if (!itemTitles.Contains(n)) itemTitles.Add(n);
+                    if (!string.IsNullOrWhiteSpace(d) && !itemDetails.Contains(d)) itemDetails.Add(d);
                 }
-                if (titles.Count > 0)
+                if (itemTitles.Count > 0)
                 {
-                    this.wikiTitles[id] = titles;
-                    this.wikiDetails[id] = details;
+                    titleMap[id] = itemTitles;
+                    detailMap[id] = itemDetails;
                 }
             }
+
+            this.wikiTitles = titleMap;
+            this.wikiDetails = detailMap;
 
             DalamudServices.PluginLog.Information(
                 $"[幻化助手] wiki 获取方式就绪：{this.wikiTitles.Count} 个道具 / {srcs.Count} 条来源，用时 {sw.ElapsedMilliseconds} ms");
@@ -2239,13 +2551,18 @@ public sealed class LKami9GlamourHelper : ModuleBase
         catch (Exception ex)
         {
             DalamudServices.PluginLog.Information(ex, "[幻化助手] 载入 wiki 获取方式失败（退回本地聚合）");
+            throw;   // 交给外层 LoadWikiSources 复位标志 + 退避
         }
     }
 
-    /// <summary>取某道具的获取方式（wiki 优先，本地聚合兜底）。</summary>
+    private readonly Dictionary<uint, List<string>> sourcesResultCache = [];
+
+    /// <summary>取某道具的获取方式（wiki 优先，本地聚合兜底）。索引加载完成后结果静态，可缓存。</summary>
     private List<string> GetSources(uint itemId)
     {
         if (!this.config.ShowSources) return [];
+        if (this.sourcesResultCache.TryGetValue(itemId, out var cached)) return cached;
+
         LoadWikiSources();
         LoadItemSources();
 
@@ -2253,6 +2570,8 @@ public sealed class LKami9GlamourHelper : ModuleBase
         if (this.wikiTitles.TryGetValue(itemId, out var w)) list.AddRange(w);
         if (this.itemSources.TryGetValue(itemId, out var l))
             foreach (var s in l) if (!list.Contains(s)) list.Add(s);
+
+        this.sourcesResultCache[itemId] = list;
         return list;
     }
 
@@ -2367,7 +2686,12 @@ public sealed class LKami9GlamourHelper : ModuleBase
             }
             DalamudServices.PluginLog.Information($"[幻化助手] 收藏柜柜位索引就绪：{map.Count} 个道具");
         }
-        catch (Exception ex) { DalamudServices.PluginLog.Information(ex, "[幻化助手] 读 Cabinet 表失败"); }
+        catch (Exception ex)
+        {
+            DalamudServices.PluginLog.Information(ex, "[幻化助手] 读 Cabinet 表失败");
+            this.cabinetIdByItem = null;   // 不缓存半成品，下次重试
+            return;
+        }
         this.cabinetIdByItem = map;
     }
 
@@ -2710,30 +3034,50 @@ public sealed class LKami9GlamourHelper : ModuleBase
         catch { return false; }
     }
 
-    private void DrawPlateSection()
+    /// <summary>
+    /// 识别结果操作区（原「试穿与模板」标签页合并至此）：
+    /// 写入 / 应用游戏幻化模板 + 本地试穿，都作用于当前识别结果。
+    /// </summary>
+    private void DrawResultActionsSection()
     {
         if (this.results.Count == 0) return;
 
         ImGui.Spacing();
-        DrawSectionTitle("写入游戏模板", "把识别到的装备与染剂写入游戏幻化模板");
+        DrawSectionTitle("装备操作", "写入游戏模板，或先本地试穿看看效果");
 
-        ImGui.SetNextItemWidth(90 * ImGuiHelpers.GlobalScale);
-        if (ImGui.InputInt("目标模板###plateNo", ref this.targetPlate))
+        // 第一行：目标模板 + 写入 + 应用
+        ImGui.SetNextItemWidth(OmniTheme.Scale(72f));
+        if (ImGui.InputInt("模板###plateNo", ref this.targetPlate))
             this.targetPlate = Math.Clamp(this.targetPlate, 1, 20);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("幻化模板编号 1 ~ 20（输入后按回车确认）");
 
         ImGui.SameLine();
-        if (ImGui.Button("写入模板")) QueuePlateWrite();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("把识别到的装备 + 染剂写入目标模板\n（需要先在游戏里打开投影台的「幻化模板」界面）");
+        if (ImGui.Button("写入模板###writePlate")) QueuePlateWrite();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("把识别到的装备 + 染剂写入目标模板\n（需要先在游戏里打开投影台的「幻化模板」界面）");
 
         ImGui.SameLine();
-        if (ImGui.Button("应用模板")) ApplyPlate(this.targetPlate);
+        if (ImGui.Button("应用模板###applyPlate")) ApplyPlate(this.targetPlate);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("投影（穿上）目标模板");
+
+        // 第二行：本地试穿 + 取消
+        if (ImGui.Button("试穿这套###tryOnResults")) StartTryOnFromResults();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("立刻穿到你自己身上看效果（只影响本地显示，别人看不到、也不改真实幻化）");
+
+        ImGui.SameLine();
+        using (ImRaii.Disabled(!this.tryOnActive))
+        {
+            if (ImGui.Button("取消试穿###stopTryOn")) StopTryOn(clear: true);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("恢复试穿前的样子");
+        }
 
         if (!string.IsNullOrEmpty(this.plateStatus))
             ImGui.TextWrapped(this.plateStatus);
+        if (!string.IsNullOrEmpty(this.tryOnStatus))
+            ImGui.TextDisabled(this.tryOnStatus);
 
-        // 前置条件提示（游戏规则限制）
+        // 容器校验（游戏规则：写入模板需要装备在投影台或收藏柜）
         this.LoadPrismBoxIndexIfNeeded();
         if (this.prismBoxIndex.Count > 0 || this.armoireItemIds.Count > 0)
         {
@@ -2820,33 +3164,6 @@ public sealed class LKami9GlamourHelper : ModuleBase
             items.Add((12, rings[1].ItemId, s0, s1));
         }
         return items;
-    }
-
-    private void DrawTryOnSection()
-    {
-        ImGui.Spacing();
-        DrawSectionTitle("本地试穿", "不需要投影台，也不需要持有装备");
-
-        var noResult = this.results.Count == 0;
-        using (ImRaii.Disabled(noResult))
-        {
-            if (ImGui.Button("试穿这套")) StartTryOnFromResults();
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("立刻穿到你自己身上看效果（只影响本地显示，别人看不到、也不改真实幻化）");
-        }
-
-        ImGui.SameLine();
-        using (ImRaii.Disabled(!this.tryOnActive))
-        {
-            if (ImGui.Button("取消试穿")) StopTryOn(clear: true);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("恢复试穿前的样子");
-        }
-
-        if (noResult)
-            ImGui.TextDisabled("先在「识别与装备」中读取一套幻化，「试穿这套」才会可用。");
-
-        if (!string.IsNullOrEmpty(this.tryOnStatus))
-            ImGui.TextWrapped(this.tryOnStatus);
     }
 
     // ── 本地试穿：用内置同款的 ItemPreviewService（公开 API）────────────────
@@ -2952,6 +3269,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
     /// </summary>
     private void OnFrameworkTick(Dalamud.Plugin.Services.IFramework framework)
     {
+        this.ApplyPendingOcr();   // OCR 结果回到框架线程才应用（读游戏内存 + 改 UI 状态）
         this.TickPlateWrite();
         this.TickApplyPlate();
         this.TickGearsetBinding();
@@ -3480,7 +3798,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
             listStyle.Color(ImGuiCol.FrameBg, PanelColor(OmniTheme.Tokens));
             if (ImGui.BeginListBox(
                     "###presetList",
-                    new System.Numerics.Vector2(250 * ImGuiHelpers.GlobalScale, presetListHeight)))
+                    new System.Numerics.Vector2(OmniTheme.Scale(260f), presetListHeight)))
             {
                 var clipper = new ImGuiListClipper();
                 clipper.Begin(this.config.Presets.Count);
@@ -3514,20 +3832,46 @@ public sealed class LKami9GlamourHelper : ModuleBase
         }
 
         var selected = this.config.Presets[this.selectedPresetIndex];
-        ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
+        ImGui.SetNextItemWidth(OmniTheme.Scale(300f));
         if (ImGui.InputText("预设名###presetName", ref this.presetNameBuffer, 80))
             selected.Name = this.presetNameBuffer;
 
         this.DrawPresetGearsetSelector(selected);
 
-        if (ImGui.Button("试穿 / 应用"))
+        var actionHeight = OmniTheme.Scale(30f);
+        var actionSpacing = ImGui.GetStyle().ItemSpacing.X;
+        var actionWidth = MathF.Max(
+            OmniTheme.Scale(72f),
+            (ImGui.GetContentRegionAvail().X - actionSpacing * 3f) / 4f);
+        var actionSize = new System.Numerics.Vector2(actionWidth, actionHeight);
+
+        if (ImGui.Button("试穿 / 应用###presetTryOn", actionSize))
             this.StartTryOnPreset(this.selectedPresetIndex, false);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("在本地试穿这条预设（只影响自己看到的外观）");
         ImGui.SameLine();
-        if (ImGui.Button("复制分享文本"))
+
+        using (ImRaii.Disabled(!this.tryOnActive))
+        {
+            if (ImGui.Button("解除试穿###presetStopTryOn", actionSize))
+            {
+                this.StopTryOn(clear: true);
+                this.presetStatus = "已解除试穿，恢复真实外观。";
+            }
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("恢复试穿前的样子（同角色快捷栏的「清除试穿」）");
+        ImGui.SameLine();
+
+        if (ImGui.Button("复制分享文本###presetCopy", actionSize))
             this.CopyPresetText(selected);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("复制 Omni 兼容的分享文本");
         ImGui.SameLine();
-        if (ImGui.Button("删除预设"))
+        if (ImGui.Button("删除预设###presetDelete", actionSize))
             this.DeleteSelectedPreset();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("删除这条预设（不影响游戏内幻化模板）");
 
         this.DrawPresetItemTable(selected);
         this.DrawPresetSpecialRows(selected);
@@ -3922,11 +4266,11 @@ public sealed class LKami9GlamourHelper : ModuleBase
                 ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingFixedFit))
             return;
 
-        ImGui.TableSetupColumn("部位", ImGuiTableColumnFlags.WidthFixed, 58 * ImGuiHelpers.GlobalScale);
-        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 30 * ImGuiHelpers.GlobalScale);
+        ImGui.TableSetupColumn("部位", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(58f));
+        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(44f));
         ImGui.TableSetupColumn("装备", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableSetupColumn("染剂", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 38 * ImGuiHelpers.GlobalScale);
+        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(44f));
         ImGui.TableHeadersRow();
 
         foreach (var (slot, slotName) in PresetSlots)
@@ -3938,7 +4282,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
 
             ImGui.TableNextColumn();
             if (item is { ItemID: not 0 })
-                DrawGameIcon(GetPresetItemIcon(item.ItemID), 24f);
+                DrawGameIcon(GetPresetItemIcon(item.ItemID), OmniTheme.Scale(40f));
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(item is { ItemID: not 0 } ? GetPresetItemName(item.ItemID) : "无");
@@ -4087,48 +4431,78 @@ public sealed class LKami9GlamourHelper : ModuleBase
 
     private void DrawPresetSpecialRows(LKami9GlamourPreset preset)
     {
-        ImGui.Separator();
-        ImGui.TextDisabled("发型 / 眼镜（只影响 Omni 式本地试穿，不写入游戏幻化模板）");
+        ImGui.Spacing();
+        DrawSectionTitle("发型 / 眼镜", "只影响 Omni 式本地试穿，不写入游戏幻化模板");
 
-        ImGui.SetNextItemWidth(250 * ImGuiHelpers.GlobalScale);
-        ImGui.InputText("发型名称/ID###presetHairstyle", ref this.presetHairstyleInput, 96);
-        ImGui.SameLine();
-        if (ImGui.Button("确认发型"))
-        {
-            var id = this.ResolveHairstyleInput(this.presetHairstyleInput);
-            if (id == null)
+        if (!ImGui.BeginTable("###presetSpecial", 3,
+                ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
+            return;
+
+        ImGui.TableSetupColumn("项目", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(56f));
+        ImGui.TableSetupColumn("值", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("操作", ImGuiTableColumnFlags.WidthFixed, OmniTheme.Scale(220f));
+        ImGui.TableHeadersRow();
+
+        this.DrawPresetSpecialRow(
+            "发型",
+            ref this.presetHairstyleInput,
+            t => this.ResolveHairstyleInput(t),
+            id =>
             {
-                this.presetStatus = "没有找到这个发型。";
-            }
-            else
-            {
-                preset.HairstyleID = id.Value;
-                this.presetHairstyleInput = GetHairstyleName(id.Value);
+                preset.HairstyleID = id;
+                this.presetHairstyleInput = GetHairstyleName(id);
                 this.presetStatus = "已更新预设发型。";
-            }
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("留空或输入 0 = 不动发型");
+            },
+            "留空或输入 0 = 不动发型");
 
-        ImGui.SetNextItemWidth(250 * ImGuiHelpers.GlobalScale);
-        ImGui.InputText("眼镜名称/ID###presetGlasses", ref this.presetGlassesInput, 96);
-        ImGui.SameLine();
-        if (ImGui.Button("确认眼镜"))
-        {
-            var id = this.ResolveGlassesInput(this.presetGlassesInput);
-            if (id == null)
+        this.DrawPresetSpecialRow(
+            "眼镜",
+            ref this.presetGlassesInput,
+            t => this.ResolveGlassesInput(t),
+            id =>
             {
-                this.presetStatus = "没有找到这个眼镜/面部配饰。";
-            }
-            else
-            {
-                preset.GlassesID = id.Value;
-                this.presetGlassesInput = GetGlassesName(id.Value);
+                preset.GlassesID = id;
+                this.presetGlassesInput = GetGlassesName(id);
                 this.presetStatus = "已更新预设眼镜。";
-            }
+            },
+            "留空或输入 0 = 不戴");
+
+        ImGui.EndTable();
+    }
+
+    private void DrawPresetSpecialRow(
+        string label,
+        ref string input,
+        Func<string, uint?> resolve,
+        Action<uint> apply,
+        string hint)
+    {
+        ImGui.TableNextRow();
+
+        ImGui.TableNextColumn();
+        ImGui.TextUnformatted(label);
+
+        ImGui.TableNextColumn();
+        ImGui.SetNextItemWidth(MathF.Max(1f, ImGui.GetContentRegionAvail().X));
+        ImGui.InputText($"###preset{label}", ref input, 96);
+
+        ImGui.TableNextColumn();
+        var buttonWidth = OmniTheme.Scale(96f);
+        if (ImGui.Button($"确认{label}###confirm{label}", new System.Numerics.Vector2(buttonWidth, 0)))
+        {
+            var id = resolve(input);
+            if (id == null)
+                this.presetStatus = label switch
+                {
+                    "发型" => "没有找到这个发型。",
+                    _ => "没有找到这个眼镜/面部配饰。",
+                };
+            else
+                apply(id.Value);
         }
+
         ImGui.SameLine();
-        ImGui.TextDisabled("留空或输入 0 = 不戴");
+        ImGui.TextDisabled(hint);
     }
 
     private static string PresetSlotToResultSlot(int slot) => slot switch
@@ -4219,7 +4593,7 @@ public sealed class LKami9GlamourHelper : ModuleBase
         {
             var gearset = preset.GearsetIndex >= 0 ? $" [套装 {preset.GearsetIndex + 1}]" : "";
             var activeText = active ? " [试穿中]" : "";
-            preset.CachedListLabel = string.Concat(DisplayPresetName(preset), gearset, activeText);
+            preset.CachedListLabel = string.Concat($"{index + 1}. ", DisplayPresetName(preset), gearset, activeText);
             preset.CachedLabelName = preset.Name;
             preset.CachedLabelGearset = preset.GearsetIndex;
             preset.CachedLabelActive = active;
@@ -4674,4 +5048,10 @@ public sealed class LKami9GlamourHelperConfig
 
     /// <summary>在游戏角色查看窗口旁显示快捷操作栏。</summary>
     public bool ShowInspectQuickActions { get; set; } = true;
+
+    /// <summary>角色快捷栏解除跟随（在标题栏上拖动即可解除），之后可自由拖拽移动。</summary>
+    public bool QuickActionsFree { get; set; }
+
+    /// <summary>自由拖拽时的窗口位置，跨重启保留。</summary>
+    public System.Numerics.Vector2 QuickActionsPos { get; set; }
 }
