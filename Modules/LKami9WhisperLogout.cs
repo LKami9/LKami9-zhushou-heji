@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -71,6 +72,7 @@ public sealed class LKami9WhisperLogout : ModuleBase
     private DateTime nextProbeUtc;
     private int connectAttempts;
     private DateTime nextFallbackUtc;
+    private DateTime nextInstanceSearchUtc;
     private static Type? cachedTransportInterface;
     private string status = "尚未开始监听。";
     private string lastHitSummary = "还没有命中记录。";
@@ -167,40 +169,305 @@ public sealed class LKami9WhisperLogout : ModuleBase
         return null;
     }
 
-    /// <summary>取服务单例：优先静态无参方法，其次静态字段。</summary>
-    private static object? GetServiceInstance(Type type)
+    /// <summary>
+    /// 取服务实例。混淆器把 Omni 的单例访问器方法体换成了 return null，
+    /// 那些“单例静态字段”也全是无人写入的孤儿字段，静态路子全断；
+    /// 因此依次尝试：① 各类型静态字段里直接持有服务实例；
+    /// ② 从 Dalamud 服务事件的订阅者对象出发，在 Omni 程序集内做有界 BFS。
+    /// </summary>
+    private static object? FindLiveInstance(Type type)
     {
-        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
-        {
-            if (method.GetParameters().Length != 0 || method.ReturnType != type)
-                continue;
-            try
-            {
-                if (method.Invoke(null, null) is { } instance)
-                    return instance;
-            }
-            catch
-            {
-                // 换个候选继续试
-            }
-        }
+        var viaStatic = FindInStaticFields(type);
+        if (viaStatic != null)
+            return viaStatic;
 
-        foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+        return FindInstanceByGraphWalk(type);
+    }
+
+    /// <summary>
+    /// 扫描 Omni 自己程序集里的静态字段，找直接持有目标类型实例的。
+    /// 只扫 OmniToolbox.* 程序集：服务与传输类型都声明在那里，别的程序集不可能持有，
+    /// 而全量扫描 79 个程序集要 1 秒以上，不能放在 5 秒的探测周期里。
+    /// </summary>
+    private static object? FindInStaticFields(Type targetType)
+    {
+        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
-            if (field.FieldType != type)
+            if (!IsOmniAssembly(assembly))
                 continue;
+
+            Type[] types;
             try
             {
-                if (field.GetValue(null) is { } instance)
-                    return instance;
+                types = assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                types = ex.Types.Where(t => t != null).ToArray()!;
             }
             catch
             {
-                // 忽略
+                continue;
+            }
+
+            foreach (var type in types)
+            {
+                if (type is null)
+                    continue;
+
+                FieldInfo[] fields;
+                try
+                {
+                    fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var field in fields)
+                {
+                    try
+                    {
+                        // field.FieldType 访问在依赖缺失时也会抛（如 System.Drawing.Common 没加载），必须包住
+                        if (!targetType.IsAssignableFrom(field.FieldType))
+                            continue;
+                        if (field.GetValue(null) is { } value)
+                            return value;
+                    }
+                    catch
+                    {
+                        // 读不了的字段跳过
+                    }
+                }
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 运行时对象图遍历找实例。根节点取自 Dalamud 各服务对象上事件/委托的订阅者
+    /// （Omni 的 UI、框架更新、插件命令等都会订阅），之后只在 Omni 自己的程序集内
+    /// 逐字段扩展，避免钻进游戏对象图。有界（时间 + 数量）保证不会卡住。
+    /// </summary>
+    private static object? FindInstanceByGraphWalk(Type targetType)
+    {
+        List<object> roots;
+        try
+        {
+            roots = CollectDelegateRoots();
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (roots.Count == 0)
+            return null;
+
+        var visited = new HashSet<object>(ReferenceComparer.Instance);
+        var queue = new Queue<object>(roots.Count);
+        foreach (var root in roots)
+        {
+            if (root == null || !visited.Add(root))
+                continue;
+            if (targetType.IsInstanceOfType(root))
+                return root;
+            queue.Enqueue(root);
+        }
+
+        var fieldCache = new Dictionary<Type, FieldInfo[]>();
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        var budget = 30000;
+
+        while (queue.Count > 0 && budget-- > 0 && DateTime.UtcNow < deadline)
+        {
+            var current = queue.Dequeue();
+            var currentType = current.GetType();
+
+            // 只沿 Omni 自己的对象走，控制图规模
+            if (!IsOmniAssemblyType(currentType))
+                continue;
+
+            if (!fieldCache.TryGetValue(currentType, out var fields))
+            {
+                fields = GetWalkableFields(currentType);
+                fieldCache[currentType] = fields;
+            }
+
+            foreach (var field in fields)
+            {
+                object? value;
+                try
+                {
+                    value = field.GetValue(current);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (value == null)
+                    continue;
+
+                if (value is Array array)
+                {
+                    foreach (var element in array)
+                    {
+                        if (element == null || element is string)
+                            continue;
+                        if (targetType.IsInstanceOfType(element))
+                            return element;
+                        if (visited.Add(element))
+                            queue.Enqueue(element);
+                    }
+
+                    continue;
+                }
+
+                if (targetType.IsInstanceOfType(value))
+                    return value;
+                if (visited.Add(value))
+                    queue.Enqueue(value);
+            }
+        }
+
+        DalamudServices.PluginLog.Information(
+            $"[LKami9WhisperLogout] 对象图遍历未命中 {targetType.Name}：根 {roots.Count} 个，访问 {visited.Count} 个对象，剩余队列 {queue.Count}");
+        return null;
+    }
+
+    /// <summary>取类型的可遍历实例字段；字段类型解析失败（缺依赖程序集）时跳过该字段。</summary>
+    private static FieldInfo[] GetWalkableFields(Type type)
+    {
+        try
+        {
+            var all = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            var result = new List<FieldInfo>(all.Length);
+            foreach (var field in all)
+            {
+                try
+                {
+                    var fieldType = field.FieldType;
+                    if (fieldType.IsPrimitive || fieldType.IsEnum || fieldType == typeof(string))
+                        continue;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                result.Add(field);
+            }
+
+            return [.. result];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static bool IsOmniAssemblyType(Type type)
+    {
+        var name = type.Assembly.GetName().Name;
+        return name != null && name.StartsWith("OmniToolbox", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOmniAssembly(Assembly assembly)
+    {
+        var name = assembly.GetName().Name;
+        return name != null && name.StartsWith("OmniToolbox", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>收集 Dalamud 服务对象上所有委托的订阅者实例作为遍历根节点。</summary>
+    private static List<object> CollectDelegateRoots()
+    {
+        var roots = new List<object>();
+        var services = new object?[]
+        {
+            DalamudServices.Framework,
+            DalamudServices.AddonLifecycle,
+            DalamudServices.ChatGUI,
+            DalamudServices.CommandManager,
+            DalamudServices.PluginInterface.UiBuilder,
+        };
+
+        foreach (var service in services)
+        {
+            if (service == null)
+                continue;
+
+            FieldInfo[] fields;
+            try
+            {
+                fields = service.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var field in fields)
+            {
+                object? value;
+                try
+                {
+                    value = field.GetValue(service);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                CollectFromValue(value, roots, 0);
+            }
+        }
+
+        return roots;
+    }
+
+    private static void CollectFromValue(object? value, List<object> roots, int depth)
+    {
+        if (value == null || depth > 2)
+            return;
+
+        if (value is Delegate del)
+        {
+            foreach (var handler in del.GetInvocationList())
+            {
+                if (handler.Target is not { } target)
+                    continue;
+                var duplicate = false;
+                foreach (var existing in roots)
+                {
+                    if (ReferenceEquals(existing, target))
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+
+                if (!duplicate)
+                    roots.Add(target);
+            }
+
+            return;
+        }
+
+        if (value is IDictionary dictionary)
+        {
+            foreach (var entry in dictionary.Values)
+                CollectFromValue(entry, roots, depth + 1);
+            return;
+        }
+
+        if (value is Array array && depth < 2)
+        {
+            foreach (var element in array)
+                CollectFromValue(element, roots, depth + 1);
+        }
     }
 
     private void ProbeService()
@@ -208,7 +475,8 @@ public sealed class LKami9WhisperLogout : ModuleBase
         this.serviceType ??= FindWorldChatServiceType();
         if (this.serviceType == null)
         {
-            this.serviceNote = "未找到国服频道服务（Omni 版本变化？）";
+            this.serviceNote = "未找到国服频道服务类型（Omni 版本变化？）";
+            this.status = "未找到国服频道服务类型。";
             return;
         }
 
@@ -216,19 +484,25 @@ public sealed class LKami9WhisperLogout : ModuleBase
         this.selfAliasIdProperty ??= this.serviceType.GetProperty("SelfAliasID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
         this.connectedProperty ??= this.serviceType.GetProperty("Connected", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
-        // 优先用 Omni 自己的服务单例（与聊天框优化共用同一条频道连接）；
-        // 若当前拿的是兜底实例，而 Omni 单例这时出现了，就切换过去。
-        if (this.serviceIsFallback && GetServiceInstance(this.serviceType) is { } shared)
+        // 优先用 Omni 自己的服务实例（与聊天框优化共用同一条频道连接）；
+        // 若当前拿的是兜底实例，而 Omni 的实例这时出现了，就切换过去。
+        if (this.serviceIsFallback && FindLiveInstance(this.serviceType) is { } shared)
         {
             this.UnsubscribeWhisper();
             this.service = shared;
             this.serviceIsFallback = false;
+            this.serviceNote = "已切换到 Omni 的频道服务实例";
         }
 
-        this.service ??= GetServiceInstance(this.serviceType);
+        // 实例查找（静态字段 + 对象图遍历）有成本，按 10 秒节流，不跟着 5 秒探测周期白跑
+        if (this.service == null && DateTime.UtcNow >= this.nextInstanceSearchUtc)
+        {
+            this.nextInstanceSearchUtc = DateTime.UtcNow.AddSeconds(10);
+            this.service = FindLiveInstance(this.serviceType);
+        }
 
-        // 单例还没有（聊天功能未初始化）时，用传输层单例自建一个服务实例，保证本模块独立可用。
-        // 全程序集扫描有成本，失败后按 30 秒退避重试，不每帧周期白扫。
+        // Omni 自己的实例还没出现时，用传输层实例自建一个服务，保证本模块独立可用。
+        // 对象图遍历有成本，失败后按 30 秒退避重试，不每周期白扫。
         if (this.service == null)
         {
             if (DateTime.UtcNow >= this.nextFallbackUtc)
@@ -241,7 +515,9 @@ public sealed class LKami9WhisperLogout : ModuleBase
 
         if (this.service == null)
         {
-            this.serviceNote = "服务尚未就绪（Omni 聊天功能可能未初始化）";
+            this.serviceNote = "未拿到服务实例（Omni 聊天功能可能未初始化，或对象图里不可达）";
+            this.status = "未拿到国服频道服务实例。";
+            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 探测：类型已找到，但实例不可达");
             return;
         }
 
@@ -253,10 +529,12 @@ public sealed class LKami9WhisperLogout : ModuleBase
                 this.serviceNote = this.serviceIsFallback
                     ? "已用独立实例订阅私聊事件（Omni 聊天功能启用后将自动切换）"
                     : "已订阅私聊事件";
+                this.status = "已订阅私聊事件。";
             }
             catch (Exception ex)
             {
                 this.serviceNote = $"订阅私聊事件失败：{ex.Message}";
+                this.status = $"订阅私聊事件失败：{ex.Message}";
                 DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 订阅 WhisperReceived 失败：{ex}");
             }
         }
@@ -288,7 +566,7 @@ public sealed class LKami9WhisperLogout : ModuleBase
             if (cachedTransportInterface == null)
                 return null;
 
-            var transport = GetTransportInstance(cachedTransportInterface);
+            var transport = FindLiveInstance(cachedTransportInterface);
             if (transport == null)
                 return null;
 
@@ -334,45 +612,6 @@ public sealed class LKami9WhisperLogout : ModuleBase
                 catch
                 {
                     // 某些类型的特性检查可能抛异常，跳过
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static object? GetTransportInstance(Type interfaceType)
-    {
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type[] types;
-            try
-            {
-                types = assembly.GetTypes();
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var type in types)
-            {
-                if (type is null || type.IsInterface || type.IsAbstract || !interfaceType.IsAssignableFrom(type))
-                    continue;
-
-                foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
-                {
-                    if (method.GetParameters().Length != 0 || method.ReturnType != type)
-                        continue;
-                    try
-                    {
-                        if (method.Invoke(null, null) is { } instance)
-                            return instance;
-                    }
-                    catch
-                    {
-                        // 换下一个候选
-                    }
                 }
             }
         }
@@ -698,29 +937,37 @@ public sealed class LKami9WhisperLogout : ModuleBase
     }
 
     /// <summary>
-    /// 未连接国服频道时尝试连接。服务类的连接方法名经过混淆，按签名找：
+    /// 未连接国服频道时尝试连接。服务类的连接方法名经过混淆，按签名找候选：
     /// 返回 void/Task、参数为 0/1/2 个 bool 的实例方法（跳过属性与事件访问器）。
-    /// 只调用一个，失败留状态提示，不反复重试。
+    /// 若服务有 desiredConnected 字段，就逐个试到该字段被翻开为止——这样能确认
+    /// 真的踩到了连接开关，而不是误调了别的布尔方法。
     /// </summary>
     private void TryConnectService()
     {
         if (this.service == null || this.serviceType == null)
             return;
 
-        foreach (var method in this.serviceType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+        var desiredField = this.serviceType.GetField("desiredConnected", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        var desiredBefore = desiredField?.GetValue(this.service) is true;
+
+        var candidates = this.serviceType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(method =>
+            {
+                if (method.IsSpecialName)
+                    return false;
+                if (method.ReturnType != typeof(void) && method.ReturnType != typeof(Task))
+                    return false;
+
+                var parameters = method.GetParameters();
+                return parameters.Length == 0
+                    || (parameters.Length == 1 && parameters[0].ParameterType == typeof(bool))
+                    || (parameters.Length == 2 && parameters[0].ParameterType == typeof(bool) && parameters[1].ParameterType == typeof(bool));
+            })
+            .ToList();
+
+        foreach (var method in candidates)
         {
-            if (method.IsSpecialName)
-                continue;
-
             var parameters = method.GetParameters();
-            var isCandidate = parameters.Length == 0
-                || (parameters.Length == 1 && parameters[0].ParameterType == typeof(bool))
-                || (parameters.Length == 2 && parameters[0].ParameterType == typeof(bool) && parameters[1].ParameterType == typeof(bool));
-            if (!isCandidate)
-                continue;
-            if (method.ReturnType != typeof(void) && method.ReturnType != typeof(Task))
-                continue;
-
             object?[] arguments = parameters.Length switch
             {
                 0 => [],
@@ -731,17 +978,29 @@ public sealed class LKami9WhisperLogout : ModuleBase
             try
             {
                 method.Invoke(this.service, arguments);
-                DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 尝试连接国服频道（{method.Name}）");
             }
             catch (Exception ex)
             {
-                DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 连接国服频道失败（{method.Name}）：{ex.Message}");
+                DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 调用 {method.Name} 失败：{ex.Message}");
+                continue;
             }
 
-            return;
+            DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 尝试连接国服频道（调用 {method.Name}）");
+
+            // desiredConnected 被翻开 → 就是连接开关，收工
+            if (desiredField != null && !desiredBefore && desiredField.GetValue(this.service) is true)
+            {
+                DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 确认 {method.Name} 为连接开关");
+                return;
+            }
+
+            // 没有 desiredConnected 字段可验证时，保守地只调一个
+            if (desiredField == null)
+                return;
         }
 
-        this.serviceNote = "未找到可调用的连接方法，请在 Omni 中手动连接国服频道。";
+        if (candidates.Count == 0)
+            this.serviceNote = "未找到可调用的连接方法，请在 Omni 中手动连接国服频道。";
     }
 
     #endregion
@@ -806,6 +1065,8 @@ public sealed class LKami9WhisperLogout : ModuleBase
         ImGui.SameLine();
         if (ImGui.Button("刷新状态"))
         {
+            this.nextInstanceSearchUtc = default;
+            this.nextFallbackUtc = default;
             this.ProbeService();
             this.ReportStatus();
         }
@@ -924,4 +1185,14 @@ public sealed class LKami9WhisperLogoutConfig
 
     /// <summary>发送者过滤：化名 ID 或显示名，逗号分隔；留空表示不限发送者。</summary>
     public string SenderFilter { get; set; } = string.Empty;
+}
+
+/// <summary>按引用比较对象，供对象图遍历去重（不用默认的 Equals/GetHashCode）。</summary>
+internal sealed class ReferenceComparer : IEqualityComparer<object>
+{
+    public static readonly ReferenceComparer Instance = new();
+
+    public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+
+    public int GetHashCode(object obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
 }
