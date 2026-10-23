@@ -40,16 +40,6 @@
       "MinimumOmniVersion": "1.1.7.0",
       "File": "Modules/LKami9FolkloreBooks.cs",
       "Sha256": "A5952CD59B7784CFB456DD1ECBB65B35E0539D859B9A03D627713A5DFA2BC17C"
-    },
-    {
-      "InternalName": "LKami9WhisperLogout",
-      "Name": "LKami9频道私聊登出",
-      "Author": "LKami9",
-      "Description": "监听游戏聊天框里的 Omni 国服频道私聊，命中关键词自动 /logout；带未命中原因诊断，发一条私聊即知卡在哪一步。",
-      "Version": "1.1.3",
-      "MinimumOmniVersion": "1.1.7.0",
-      "File": "Modules/LKami9WhisperLogout.cs",
-      "Sha256": "1FB9859C9B04048CBC99429B93B0B6DD004575FF197D751CE7D5CA18307108EE"
     }
   ]
 }
