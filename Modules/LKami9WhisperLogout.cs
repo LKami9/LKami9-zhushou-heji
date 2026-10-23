@@ -155,11 +155,30 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
+            // 发送者字段：游戏原生消息（私信/说话/队伍等）Dalamud 会填入发送者名字；
+            // 而 Omni 是把「名字 >> 内容」作为一整串用 ChatGui.Print 打出来的，
+            // Print 的签名里没有 sender 参数，所以这类消息的 Sender 一定是空的。
+            // 这就是区分「游戏自带私信」和「Omni 频道私聊」的确定特征。
+            string senderField;
+            try
+            {
+                senderField = message.Sender.ToString();
+            }
+            catch
+            {
+                senderField = string.Empty;
+            }
+
             // 诊断：把频道格式的消息详情打出来，便于第一次使用时确认私聊/公聊的实际格式与 chat type
-            this.LogDiagnostic(message.LogKind, text);
+            this.LogDiagnostic(message.LogKind, senderField, text);
 
             if (!this.TryParseChannelMessage(text, out var sender, out var content))
                 return;
+
+            // 只收“发送者字段为空”的消息 = 插件 Print 出来的整串消息（Omni 频道消息）
+            if (this.config.RequireEmptySender && !string.IsNullOrWhiteSpace(senderField))
+                return;
+
             if (!this.ChatTypeAllowed(message.LogKind))
                 return;
             if (!this.SenderAllowed(sender))
@@ -206,7 +225,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         return sender.Length > 0 && content.Length > 0;
     }
 
-    private void LogDiagnostic(XivChatType logKind, string text)
+    private void LogDiagnostic(XivChatType logKind, string senderField, string text)
     {
         if (!this.config.Diagnostics)
             return;
@@ -226,7 +245,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         this.diagnosticCounts[logKind] = count + 1;
 
         Log(
-            $"[LKami9WhisperLogout][诊断] LogKind={(int)logKind}({logKind}) 文本={text}");
+            $"[LKami9WhisperLogout][诊断] LogKind={(int)logKind}({logKind}) Sender=\"{senderField}\" 文本={text}");
     }
 
     #endregion
@@ -583,8 +602,17 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("开启下方“诊断日志”后发一条私聊，日志里会打印该消息的 LogKind 数字，填到这里即可只收私聊。");
 
+        var requireEmptySender = this.config.RequireEmptySender;
+        if (ImGui.Checkbox("只收 Omni 频道私聊（挡掉游戏自带私信）", ref requireEmptySender))
+        {
+            this.config.RequireEmptySender = requireEmptySender;
+            changed = true;
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Omni 频道消息是插件打印的整串文本，发送者字段为空；游戏原生私信的发送者字段是对方角色名。开着即可只收 Omni 频道私聊。");
+
         var diagnostics = this.config.Diagnostics;
-        if (ImGui.Checkbox("诊断日志（记录频道消息的 ChatType，便于收紧规则）", ref diagnostics))
+        if (ImGui.Checkbox("诊断日志（记录频道消息的 ChatType 与发送者，便于确认规则）", ref diagnostics))
         {
             this.config.Diagnostics = diagnostics;
             changed = true;
@@ -665,4 +693,11 @@ public sealed class LKami9WhisperLogoutConfig
 
     /// <summary>打印频道消息的 ChatType 诊断日志（每种类型限流 3 条 / 10 秒）。</summary>
     public bool Diagnostics { get; set; } = true;
+
+    /// <summary>
+    /// 只接受“发送者字段为空”的消息。Omni 频道消息是插件 Print 出来的整串文本
+    /// （名字 &gt;&gt; 内容），Sender 字段为空；游戏原生私信的 Sender 是对方角色名。
+    /// 开着即可把游戏自带私信挡在外面，只收 Omni 频道私聊。
+    /// </summary>
+    public bool RequireEmptySender { get; set; } = true;
 }
