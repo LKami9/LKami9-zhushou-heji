@@ -46,10 +46,10 @@
       "Name": "LKami9频道私聊登出",
       "Author": "LKami9",
       "Description": "监听 Omni 国服频道私聊，命中指定关键词时自动 /logout 并确认，可远程让角色下线；支持关键词多种匹配方式、发送者过滤、模拟命中测试。",
-      "Version": "1.0.2",
+      "Version": "1.0.3",
       "MinimumOmniVersion": "1.1.7.0",
       "File": "Modules/LKami9WhisperLogout.cs",
-      "Sha256": "671368E8E6FB52D761D52A9C1CC84FE6766E81221F4FFE10E68C6CB302299710"
+      "Sha256": "3907453A2086DBBA6C3517EAAB3F4C278612C8D569D5D25386B55BF8561A6D31"
     }
   ]
 }

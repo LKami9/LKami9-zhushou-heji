@@ -77,6 +77,10 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
     private DateTime logoutDeadlineUtc;
     private DateTime nextProbeUtc;
     private int connectAttempts;
+    private bool officialDisconnectNoted;
+    private DateTime fallbackCreatedUtc;
+    private DateTime nextStatusPrintUtc;
+    private DateTime nextActionUtc;
     private DateTime nextFallbackUtc;
     private DateTime nextInstanceSearchUtc;
     private static Type? cachedTransportInterface;
@@ -490,14 +494,17 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         this.selfAliasIdProperty ??= this.serviceType.GetProperty("SelfAliasID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
         this.connectedProperty ??= this.serviceType.GetProperty("Connected", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
-        // 优先用 Omni 自己的服务实例（与聊天框优化共用同一条频道连接）；
-        // 若当前拿的是兜底实例，而 Omni 的实例这时出现了，就切换过去。
-        if (this.serviceIsFallback && FindLiveInstance(this.serviceType) is { } shared)
+        // 兜底实例没连上时，才切到 Omni 自己的服务实例（与聊天框优化共用同一条频道连接）。
+        // 兜底实例已经连上的话就不动——避免把连上的实例换成另一个没连的。
+        if (this.serviceIsFallback && !this.IsConnected() && FindLiveInstance(this.serviceType) is { } shared)
         {
             this.UnsubscribeWhisper();
             this.service = shared;
             this.serviceIsFallback = false;
+            this.fallbackCreatedUtc = default;
+            this.connectAttempts = 0;
             this.serviceNote = "已切换到 Omni 的频道服务实例";
+            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 兜底实例未连接，已切换到 Omni 官方服务实例");
         }
 
         // 实例查找（静态字段 + 对象图遍历）有成本，按 10 秒节流，不跟着 5 秒探测周期白跑
@@ -516,6 +523,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
                 this.nextFallbackUtc = DateTime.UtcNow.AddSeconds(30);
                 this.service = this.CreateOwnServiceInstance(this.serviceType);
                 this.serviceIsFallback = this.service != null;
+                this.fallbackCreatedUtc = this.serviceIsFallback ? DateTime.UtcNow : default;
             }
         }
 
@@ -858,10 +866,47 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             return;
         }
 
-        if (!this.IsConnected() && this.config.AutoConnect && this.connectAttempts < 5)
+        // 自建兜底实例超过 90 秒还连不上：丢弃重建，避免卡在一个坏状态里
+        if (this.serviceIsFallback && !this.IsConnected() &&
+            this.fallbackCreatedUtc != default && DateTime.UtcNow - this.fallbackCreatedUtc > TimeSpan.FromSeconds(90))
         {
-            this.connectAttempts++;
-            this.TryConnectService();
+            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 自建实例 90 秒未连接，丢弃重建");
+            this.UnsubscribeWhisper();
+            this.service = null;
+            this.serviceIsFallback = false;
+            this.connectAttempts = 0;
+            this.fallbackCreatedUtc = default;
+            this.nextInstanceSearchUtc = default;
+            this.ProbeService();
+            return;
+        }
+
+        if (this.IsConnected())
+        {
+            this.officialDisconnectNoted = false;
+            return;
+        }
+
+        if (this.serviceIsFallback)
+        {
+            // 只有自建实例才由本模块驱动连接：搞坏了也只影响自己，丢掉了再建一个即可。
+            // 绝不在 Omni 官方实例上调用任何方法——曾经这么做过，结果连接一抖动就被误干预，
+            // 把 Omni 自己的重连流程打断，导致 Omni 的国服频道整个进不去。
+            if (this.config.AutoConnect && this.connectAttempts < 10)
+            {
+                this.connectAttempts++;
+                this.TryConnectService();
+            }
+
+            return;
+        }
+
+        // 官方实例未连接：只提示，不代劳
+        if (!this.officialDisconnectNoted)
+        {
+            this.officialDisconnectNoted = true;
+            this.serviceNote = "Omni 的国服频道未连接，请在 Omni 聊天设置里重新连接（本模块不代替操作，以免干扰 Omni 的连接状态）。";
+            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 官方频道服务未连接，仅提示不干预");
         }
     }
 
@@ -1069,8 +1114,25 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         }
     }
 
+    /// <summary>
+    /// 动作按钮点击冷却：ImGui 按钮在 ID 冲突 / 同帧重复渲染时会连续返回 true，
+    /// “立即登出”这类按钮被误触发的后果比刷屏严重得多，统一挡一下。
+    /// </summary>
+    private bool ActionAllowed()
+    {
+        if (DateTime.UtcNow < this.nextActionUtc)
+            return false;
+        this.nextActionUtc = DateTime.UtcNow.AddMilliseconds(600);
+        return true;
+    }
+
     private void ReportStatus()
     {
+        // 节流：按钮被重复触发（ImGui ID 冲突时会这样）时不刷屏
+        if (DateTime.UtcNow < this.nextStatusPrintUtc)
+            return;
+        this.nextStatusPrintUtc = DateTime.UtcNow.AddSeconds(3);
+
         var state = this.service == null
             ? this.serviceNote
             : $"化名 {this.GetSelfAliasId()}，{(this.IsConnected() ? "已连接" : "未连接")}，命中 {this.matchCount} 次";
@@ -1102,7 +1164,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("刷新状态"))
+        if (ImGui.Button("刷新状态##whisperRefresh") && this.ActionAllowed())
         {
             this.nextInstanceSearchUtc = default;
             this.nextFallbackUtc = default;
@@ -1176,17 +1238,17 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         ImGui.Separator();
 
         // ── 测试与记录 ──
-        if (ImGui.Button("模拟命中（不登出）"))
+        if (ImGui.Button("模拟命中（不登出）##whisperTest") && this.ActionAllowed())
             this.TryHandleCommand("test");
 
         ImGui.SameLine();
-        if (ImGui.Button("测试完整流程（含登出）"))
+        if (ImGui.Button("测试完整流程（含登出）##whisperTestFull") && this.ActionAllowed())
         {
             this.BeginLogout("手动测试");
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("立即登出"))
+        if (ImGui.Button("立即登出##whisperLogoutNow") && this.ActionAllowed())
             this.BeginLogout("手动命令");
 
         ImGui.Spacing();
