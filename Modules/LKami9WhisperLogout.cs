@@ -1,13 +1,11 @@
 using System;
-using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Reflection;
-using System.Threading.Tasks;
 
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Chat;
+using Dalamud.Game.Text;
 using Dalamud.Plugin.Services;
 using OmenTools.Interop.Game.AddonEvent;
 
@@ -26,24 +24,23 @@ namespace LKami9.WhisperLogout;
 /// <summary>
 /// LKami9频道私聊登出
 ///
-/// 监听 Omni 国服频道的私聊（世界频道服务的 WhisperReceived 事件），
-/// 收到内容命中指定关键词的私聊时自动登出游戏：发送 /logout 并自动点掉确认框。
-/// 典型用途：人不在电脑前时，让朋友往自己的频道化名私聊一个约定好的词，角色立即下线。
+/// 监听游戏聊天框，收到 Omni 国服频道里「发送者 &gt;&gt; 内容」格式的私聊、
+/// 且内容命中指定关键词时，自动 /logout 并确认，可远程让角色下线。
 ///
-/// 实现说明：
-/// - 国服频道的私聊端点没有公开文档，这里不自己拼 HTTP 请求，而是反射拿 Omni 本体里的
-///   世界频道服务单例，直接订阅它公开的 WhisperReceived 事件（add 方法为 public，可跨程序集订阅）。
-/// - 服务类型名经过混淆、会随版本变化，因此按「成员特征」发现：含 WhisperReceived 事件、
-///   且事件参数类型带 Text / SenderAliasID / RecipientAliasID 属性的类即世界频道服务。
-/// - 登出走 Dalamud 命令通道（/logout），确认框用 OmenTools 的 AddonSelectYesnoEvent.ClickYes()，
-///   与 Omni 自动登录模块同一套做法。
+/// 实现思路（从简）：
+/// - 不逆向 Omni 内部服务（那套反射 + 对象图遍历既复杂又脆弱，还会因干预宿主状态出事），
+///   Omni 本来就会把频道私聊打印进游戏聊天框，直接监听 Dalamud 的 ChatMessage 事件即可，
+///   纯 Dalamud API，零 Omni 内部依赖。
+/// - 登出走游戏自己的文本命令执行器 RaptureShellModule.ExecuteCommandInner
+///   （Dalamud 的 ICommandManager.ProcessCommand 只认自家命令，不会转发游戏，已实测证实），
+///   确认框用 OmenTools 的 AddonSelectYesnoEvent.ClickYes()。
 /// </summary>
 public sealed unsafe class LKami9WhisperLogout : ModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
         Title       = "LKami9频道私聊登出",
-        Description = "监听 Omni 国服频道私聊，命中指定关键词时自动 /logout 并确认，可远程让角色下线。",
+        Description = "监听游戏聊天框里的 Omni 国服频道私聊，命中指定关键词时自动 /logout 并确认，可远程让角色下线。",
         Category    = ModuleCategory.Automation,
         Author      = "LKami9",
         Commands    =
@@ -58,40 +55,27 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
     // 宿主按“以 Config 结尾的成员”绑定已保存的配置；不能是 readonly，宿主需要给它赋值
     private LKami9WhisperLogoutConfig config = new();
 
-    // ── 世界频道服务（反射发现，随 Omni 版本兼容）──────────────────────────────
-    private Type? serviceType;
-    private object? service;
-    private bool serviceIsFallback;
-    private EventInfo? whisperEvent;
-    private Delegate? whisperHandler;
-    private PropertyInfo? selfAliasIdProperty;
-    private PropertyInfo? connectedProperty;
-    private string serviceNote = string.Empty;
-
     // ── 运行时状态 ────────────────────────────────────────────────────────────
-    private readonly ConcurrentQueue<WhisperHit> hitQueue = [];
+    private bool chatSubscribed;
     private bool frameworkSubscribed;
     private bool logoutPending;
     private bool logoutDialogSeen;
     private DateTime logoutDialogSeenUtc;
     private DateTime logoutDeadlineUtc;
-    private DateTime nextProbeUtc;
-    private int connectAttempts;
-    private bool officialDisconnectNoted;
-    private DateTime fallbackCreatedUtc;
-    private DateTime nextStatusPrintUtc;
-    private DateTime nextActionUtc;
-    private DateTime nextFallbackUtc;
-    private DateTime nextInstanceSearchUtc;
-    private static Type? cachedTransportInterface;
     private string status = "尚未开始监听。";
     private string lastHitSummary = "还没有命中记录。";
     private int matchCount;
+
     private List<string> keywordCache = [];
     private string keywordCacheSource = "\u0000";
-    private List<int> senderIdFilter = [];
+    private List<int> chatTypeFilter = [];
+    private string chatTypeCacheSource = "\u0000";
     private List<string> senderNameFilter = [];
-    private string senderFilterCacheSource = "\u0000";
+    private string senderCacheSource = "\u0000";
+
+    // 诊断日志限流：每种 LogKind 只记前几条，避免公聊刷屏时把日志也刷爆
+    private readonly Dictionary<XivChatType, int> diagnosticCounts = [];
+    private DateTime nextDiagnosticResetUtc;
 
     private System.Numerics.Vector4 WarnVec => OmniTheme.Tokens.Warning;
     private System.Numerics.Vector4 GoodVec => OmniTheme.Tokens.Success;
@@ -101,14 +85,14 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
     protected override void OnEnable()
     {
-        this.status = "正在寻找国服频道服务…";
-        this.ProbeService();
+        this.status = "正在监听聊天框…";
+        this.SubscribeChat();
         this.SubscribeFramework();
     }
 
     protected override void OnDisable()
     {
-        this.UnsubscribeWhisper();
+        this.UnsubscribeChat();
         this.UnsubscribeFramework();
         this.logoutPending = false;
         this.status = "已停止监听。";
@@ -116,541 +100,28 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
     protected override void OnDispose()
     {
-        this.UnsubscribeWhisper();
+        this.UnsubscribeChat();
         this.UnsubscribeFramework();
     }
 
     #endregion
 
-    #region 服务发现与订阅
+    #region 聊天框监听
 
-    /// <summary>
-    /// 按成员特征找世界频道服务：含 WhisperReceived 事件，且事件参数类型带
-    /// Text / SenderAliasID / RecipientAliasID 三个属性。混淆会改类名，但这些公开成员名不会改。
-    /// </summary>
-    private static Type? FindWorldChatServiceType()
+    private void SubscribeChat()
     {
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type[] types;
-            try
-            {
-                types = assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException ex)
-            {
-                types = ex.Types.Where(t => t != null).ToArray()!;
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var type in types)
-            {
-                if (type is null || type.IsInterface || type.IsEnum || type.IsAbstract)
-                    continue;
-
-                EventInfo? whisper;
-                try
-                {
-                    whisper = type.GetEvent("WhisperReceived", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (whisper?.EventHandlerType is not { IsGenericType: true } handlerType)
-                    continue;
-                if (handlerType.GetGenericTypeDefinition() != typeof(Action<>))
-                    continue;
-
-                var dto = handlerType.GetGenericArguments()[0];
-                if (dto.GetProperty("Text") is null ||
-                    dto.GetProperty("SenderAliasID") is null ||
-                    dto.GetProperty("RecipientAliasID") is null)
-                    continue;
-
-                return type;
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// 取服务实例。混淆器把 Omni 的单例访问器方法体换成了 return null，
-    /// 那些“单例静态字段”也全是无人写入的孤儿字段，静态路子全断；
-    /// 因此依次尝试：① 各类型静态字段里直接持有服务实例；
-    /// ② 从 Dalamud 服务事件的订阅者对象出发，在 Omni 程序集内做有界 BFS。
-    /// </summary>
-    private static object? FindLiveInstance(Type type)
-    {
-        var viaStatic = FindInStaticFields(type);
-        if (viaStatic != null)
-            return viaStatic;
-
-        return FindInstanceByGraphWalk(type);
-    }
-
-    /// <summary>
-    /// 扫描 Omni 自己程序集里的静态字段，找直接持有目标类型实例的。
-    /// 只扫 OmniToolbox.* 程序集：服务与传输类型都声明在那里，别的程序集不可能持有，
-    /// 而全量扫描 79 个程序集要 1 秒以上，不能放在 5 秒的探测周期里。
-    /// </summary>
-    private static object? FindInStaticFields(Type targetType)
-    {
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            if (!IsOmniAssembly(assembly))
-                continue;
-
-            Type[] types;
-            try
-            {
-                types = assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException ex)
-            {
-                types = ex.Types.Where(t => t != null).ToArray()!;
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var type in types)
-            {
-                if (type is null)
-                    continue;
-
-                FieldInfo[] fields;
-                try
-                {
-                    fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                foreach (var field in fields)
-                {
-                    try
-                    {
-                        // field.FieldType 访问在依赖缺失时也会抛（如 System.Drawing.Common 没加载），必须包住
-                        if (!targetType.IsAssignableFrom(field.FieldType))
-                            continue;
-                        if (field.GetValue(null) is { } value)
-                            return value;
-                    }
-                    catch
-                    {
-                        // 读不了的字段跳过
-                    }
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// 运行时对象图遍历找实例。根节点取自 Dalamud 各服务对象上事件/委托的订阅者
-    /// （Omni 的 UI、框架更新、插件命令等都会订阅），之后只在 Omni 自己的程序集内
-    /// 逐字段扩展，避免钻进游戏对象图。有界（时间 + 数量）保证不会卡住。
-    /// </summary>
-    private static object? FindInstanceByGraphWalk(Type targetType)
-    {
-        List<object> roots;
-        try
-        {
-            roots = CollectDelegateRoots();
-        }
-        catch
-        {
-            return null;
-        }
-
-        if (roots.Count == 0)
-            return null;
-
-        var visited = new HashSet<object>(ReferenceComparer.Instance);
-        var queue = new Queue<object>(roots.Count);
-        foreach (var root in roots)
-        {
-            if (root == null || !visited.Add(root))
-                continue;
-            if (targetType.IsInstanceOfType(root))
-                return root;
-            queue.Enqueue(root);
-        }
-
-        var fieldCache = new Dictionary<Type, FieldInfo[]>();
-        var deadline = DateTime.UtcNow.AddSeconds(3);
-        var budget = 30000;
-
-        while (queue.Count > 0 && budget-- > 0 && DateTime.UtcNow < deadline)
-        {
-            var current = queue.Dequeue();
-            var currentType = current.GetType();
-
-            // 只沿 Omni 自己的对象走，控制图规模
-            if (!IsOmniAssemblyType(currentType))
-                continue;
-
-            if (!fieldCache.TryGetValue(currentType, out var fields))
-            {
-                fields = GetWalkableFields(currentType);
-                fieldCache[currentType] = fields;
-            }
-
-            foreach (var field in fields)
-            {
-                object? value;
-                try
-                {
-                    value = field.GetValue(current);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (value == null)
-                    continue;
-
-                if (value is Array array)
-                {
-                    foreach (var element in array)
-                    {
-                        if (element == null || element is string)
-                            continue;
-                        if (targetType.IsInstanceOfType(element))
-                            return element;
-                        if (visited.Add(element))
-                            queue.Enqueue(element);
-                    }
-
-                    continue;
-                }
-
-                if (targetType.IsInstanceOfType(value))
-                    return value;
-                if (visited.Add(value))
-                    queue.Enqueue(value);
-            }
-        }
-
-        DalamudServices.PluginLog.Information(
-            $"[LKami9WhisperLogout] 对象图遍历未命中 {targetType.Name}：根 {roots.Count} 个，访问 {visited.Count} 个对象，剩余队列 {queue.Count}");
-        return null;
-    }
-
-    /// <summary>取类型的可遍历实例字段；字段类型解析失败（缺依赖程序集）时跳过该字段。</summary>
-    private static FieldInfo[] GetWalkableFields(Type type)
-    {
-        try
-        {
-            var all = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var result = new List<FieldInfo>(all.Length);
-            foreach (var field in all)
-            {
-                try
-                {
-                    var fieldType = field.FieldType;
-                    if (fieldType.IsPrimitive || fieldType.IsEnum || fieldType == typeof(string))
-                        continue;
-                }
-                catch
-                {
-                    continue;
-                }
-
-                result.Add(field);
-            }
-
-            return [.. result];
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private static bool IsOmniAssemblyType(Type type)
-    {
-        var name = type.Assembly.GetName().Name;
-        return name != null && name.StartsWith("OmniToolbox", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsOmniAssembly(Assembly assembly)
-    {
-        var name = assembly.GetName().Name;
-        return name != null && name.StartsWith("OmniToolbox", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>收集 Dalamud 服务对象上所有委托的订阅者实例作为遍历根节点。</summary>
-    private static List<object> CollectDelegateRoots()
-    {
-        var roots = new List<object>();
-        var services = new object?[]
-        {
-            DalamudServices.Framework,
-            DalamudServices.AddonLifecycle,
-            DalamudServices.ChatGUI,
-            DalamudServices.CommandManager,
-            DalamudServices.PluginInterface.UiBuilder,
-        };
-
-        foreach (var service in services)
-        {
-            if (service == null)
-                continue;
-
-            FieldInfo[] fields;
-            try
-            {
-                fields = service.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var field in fields)
-            {
-                object? value;
-                try
-                {
-                    value = field.GetValue(service);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                CollectFromValue(value, roots, 0);
-            }
-        }
-
-        return roots;
-    }
-
-    private static void CollectFromValue(object? value, List<object> roots, int depth)
-    {
-        if (value == null || depth > 2)
+        if (this.chatSubscribed)
             return;
-
-        if (value is Delegate del)
-        {
-            foreach (var handler in del.GetInvocationList())
-            {
-                if (handler.Target is not { } target)
-                    continue;
-                var duplicate = false;
-                foreach (var existing in roots)
-                {
-                    if (ReferenceEquals(existing, target))
-                    {
-                        duplicate = true;
-                        break;
-                    }
-                }
-
-                if (!duplicate)
-                    roots.Add(target);
-            }
-
-            return;
-        }
-
-        if (value is IDictionary dictionary)
-        {
-            foreach (var entry in dictionary.Values)
-                CollectFromValue(entry, roots, depth + 1);
-            return;
-        }
-
-        if (value is Array array && depth < 2)
-        {
-            foreach (var element in array)
-                CollectFromValue(element, roots, depth + 1);
-        }
+        DalamudServices.ChatGUI.ChatMessage += this.OnChatMessage;
+        this.chatSubscribed = true;
     }
 
-    private void ProbeService()
+    private void UnsubscribeChat()
     {
-        this.serviceType ??= FindWorldChatServiceType();
-        if (this.serviceType == null)
-        {
-            this.serviceNote = "未找到国服频道服务类型（Omni 版本变化？）";
-            this.status = "未找到国服频道服务类型。";
+        if (!this.chatSubscribed)
             return;
-        }
-
-        this.whisperEvent ??= this.serviceType.GetEvent("WhisperReceived", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        this.selfAliasIdProperty ??= this.serviceType.GetProperty("SelfAliasID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        this.connectedProperty ??= this.serviceType.GetProperty("Connected", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-        // 兜底实例没连上时，才切到 Omni 自己的服务实例（与聊天框优化共用同一条频道连接）。
-        // 兜底实例已经连上的话就不动——避免把连上的实例换成另一个没连的。
-        if (this.serviceIsFallback && !this.IsConnected() && FindLiveInstance(this.serviceType) is { } shared)
-        {
-            this.UnsubscribeWhisper();
-            this.service = shared;
-            this.serviceIsFallback = false;
-            this.fallbackCreatedUtc = default;
-            this.connectAttempts = 0;
-            this.serviceNote = "已切换到 Omni 的频道服务实例";
-            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 兜底实例未连接，已切换到 Omni 官方服务实例");
-        }
-
-        // 实例查找（静态字段 + 对象图遍历）有成本，按 10 秒节流，不跟着 5 秒探测周期白跑
-        if (this.service == null && DateTime.UtcNow >= this.nextInstanceSearchUtc)
-        {
-            this.nextInstanceSearchUtc = DateTime.UtcNow.AddSeconds(10);
-            this.service = FindLiveInstance(this.serviceType);
-        }
-
-        // Omni 自己的实例还没出现时，用传输层实例自建一个服务，保证本模块独立可用。
-        // 对象图遍历有成本，失败后按 30 秒退避重试，不每周期白扫。
-        if (this.service == null)
-        {
-            if (DateTime.UtcNow >= this.nextFallbackUtc)
-            {
-                this.nextFallbackUtc = DateTime.UtcNow.AddSeconds(30);
-                this.service = this.CreateOwnServiceInstance(this.serviceType);
-                this.serviceIsFallback = this.service != null;
-                this.fallbackCreatedUtc = this.serviceIsFallback ? DateTime.UtcNow : default;
-            }
-        }
-
-        if (this.service == null)
-        {
-            this.serviceNote = "未拿到服务实例（Omni 聊天功能可能未初始化，或对象图里不可达）";
-            this.status = "未拿到国服频道服务实例。";
-            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 探测：类型已找到，但实例不可达");
-            return;
-        }
-
-        if (this.whisperHandler == null && this.whisperEvent != null)
-        {
-            try
-            {
-                this.SubscribeWhisper();
-                this.serviceNote = this.serviceIsFallback
-                    ? "已用独立实例订阅私聊事件（Omni 聊天功能启用后将自动切换）"
-                    : "已订阅私聊事件";
-                this.status = "已订阅私聊事件。";
-            }
-            catch (Exception ex)
-            {
-                this.serviceNote = $"订阅私聊事件失败：{ex.Message}";
-                this.status = $"订阅私聊事件失败：{ex.Message}";
-                DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 订阅 WhisperReceived 失败：{ex}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// 订阅私聊事件。事件的 add 方法是 public，可跨程序集订阅；
-    /// 委托签名要求与方法参数严格一致，因此用泛型方法闭合到具体 DTO 类型，
-    /// 再转交接受 object 的处理方法（直接绑 object 参数会被 CreateDelegate 拒绝）。
-    /// </summary>
-    private void SubscribeWhisper()
-    {
-        var dtoType = this.whisperEvent!.EventHandlerType!.GetGenericArguments()[0];
-        var closed = typeof(LKami9WhisperLogout)
-            .GetMethod(nameof(this.OnWhisperGeneric), BindingFlags.NonPublic | BindingFlags.Instance)!
-            .MakeGenericMethod(dtoType);
-        this.whisperHandler = Delegate.CreateDelegate(this.whisperEvent.EventHandlerType, this, closed);
-        this.whisperEvent.AddEventHandler(this.service, this.whisperHandler);
-    }
-
-    private void OnWhisperGeneric<T>(T whisper) => this.HandleWhisper(whisper!);
-
-    /// <summary>用世界频道传输层单例构造一个自己的服务实例（Omni 聊天功能未启用时的兜底）。</summary>
-    private object? CreateOwnServiceInstance(Type type)
-    {
-        try
-        {
-            cachedTransportInterface ??= FindType(t => t.IsInterface && t.Name == "IOmniWorldChatTransport");
-            if (cachedTransportInterface == null)
-                return null;
-
-            var transport = FindLiveInstance(cachedTransportInterface);
-            if (transport == null)
-                return null;
-
-            var constructor = type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(c => c.GetParameters().Length == 1 &&
-                                     cachedTransportInterface.IsAssignableFrom(c.GetParameters()[0].ParameterType));
-            return constructor?.Invoke([transport]);
-        }
-        catch (Exception ex)
-        {
-            DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 自建服务实例失败：{ex.Message}");
-            return null;
-        }
-    }
-
-    private static Type? FindType(Func<Type, bool> predicate)
-    {
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type[] types;
-            try
-            {
-                types = assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException ex)
-            {
-                types = ex.Types.Where(t => t != null).ToArray()!;
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var type in types)
-            {
-                if (type is null)
-                    continue;
-                try
-                {
-                    if (predicate(type))
-                        return type;
-                }
-                catch
-                {
-                    // 某些类型的特性检查可能抛异常，跳过
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private void UnsubscribeWhisper()
-    {
-        if (this.whisperHandler == null || this.whisperEvent == null || this.service == null)
-        {
-            this.whisperHandler = null;
-            return;
-        }
-
-        try
-        {
-            this.whisperEvent.RemoveEventHandler(this.service, this.whisperHandler);
-        }
-        catch (Exception ex)
-        {
-            DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 退订 WhisperReceived 失败：{ex}");
-        }
-
-        this.whisperHandler = null;
+        DalamudServices.ChatGUI.ChatMessage -= this.OnChatMessage;
+        this.chatSubscribed = false;
     }
 
     private void SubscribeFramework()
@@ -669,89 +140,93 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         this.frameworkSubscribed = false;
     }
 
-    #endregion
-
-    #region 私聊接收
-
-    /// <summary>私聊事件在频道连接的后台线程触发，只做解析和入队，不碰游戏内状态。</summary>
-    private void HandleWhisper(object whisper)
+    /// <summary>
+    /// 聊天框消息在框架线程触发，可直接处理。
+    /// Omni 国服频道的消息格式为「发送者 &gt;&gt; 内容」，按分隔符拆开后匹配关键词。
+    /// </summary>
+    private void OnChatMessage(IHandleableChatMessage message)
     {
         try
         {
-            var text        = ReadString(whisper, "Text");
-            var senderName  = ReadString(whisper, "SenderDisplayName");
-            var senderAlias = ReadInt32(whisper, "SenderAliasID");
-            var recipientId = ReadInt32(whisper, "RecipientAliasID");
-            var selfId      = this.GetSelfAliasId();
-
-            // 只处理发给自己的私聊（自己发出去的 Recipient 是对方）
-            if (selfId > 0 && recipientId != selfId)
+            if (message.IsHandled)
                 return;
 
+            var text = message.Message.ToString();
             if (string.IsNullOrWhiteSpace(text))
                 return;
-            if (!this.IsMatch(text))
+
+            // 诊断：把频道格式的消息详情打出来，便于第一次使用时确认私聊/公聊的实际格式与 chat type
+            this.LogDiagnostic(message.LogKind, text);
+
+            if (!this.TryParseChannelMessage(text, out var sender, out var content))
                 return;
-            if (!this.SenderAllowed(senderAlias, senderName))
+            if (!this.ChatTypeAllowed(message.LogKind))
+                return;
+            if (!this.SenderAllowed(sender))
+                return;
+            if (!this.IsMatch(content))
                 return;
 
-            this.hitQueue.Enqueue(new WhisperHit(senderName, senderAlias, text, false));
+            this.matchCount++;
+            this.lastHitSummary = $"{DateTime.Now:HH:mm:ss} {sender}：{content}";
+
+            if (this.config.NotifyInChat)
+                PrintToChat($"[频道私聊登出] 命中：{sender}：{content}");
+
+            if (!this.config.LogoutOnMatch)
+            {
+                this.status = $"命中（仅提示模式）：{content}";
+                return;
+            }
+
+            this.BeginLogout($"命中关键词：{content}");
         }
         catch (Exception ex)
         {
-            DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 处理私聊事件异常：{ex}");
+            LogWarning($"[LKami9WhisperLogout] 处理聊天消息异常：{ex}");
         }
     }
 
-    private static string ReadString(object whisper, string property)
+    /// <summary>按「发送者 分隔符 内容」拆消息；拆不开说明不是频道消息。</summary>
+    private bool TryParseChannelMessage(string text, out string sender, out string content)
     {
-        try
-        {
-            var value = whisper.GetType().GetProperty(property, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(whisper);
-            return value as string ?? string.Empty;
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
+        sender = string.Empty;
+        content = string.Empty;
 
-    private static int ReadInt32(object whisper, string property)
-    {
-        try
-        {
-            var value = whisper.GetType().GetProperty(property, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(whisper);
-            return value is int i ? i : 0;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
+        var separator = this.config.Separator;
+        if (string.IsNullOrEmpty(separator))
+            separator = " >> ";
 
-    private int GetSelfAliasId()
-    {
-        try
-        {
-            var value = this.selfAliasIdProperty?.GetValue(this.service!);
-            return value is int i ? i : 0;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private bool IsConnected()
-    {
-        try
-        {
-            return this.connectedProperty?.GetValue(this.service!) is true;
-        }
-        catch
-        {
+        var index = text.IndexOf(separator, StringComparison.Ordinal);
+        if (index <= 0)
             return false;
+
+        sender = text[..index].Trim();
+        content = text[(index + separator.Length)..].Trim();
+        return sender.Length > 0 && content.Length > 0;
+    }
+
+    private void LogDiagnostic(XivChatType logKind, string text)
+    {
+        if (!this.config.Diagnostics)
+            return;
+        if (!text.Contains(" >> ", StringComparison.Ordinal))
+            return;
+
+        // 每 10 秒清一次计数，保证突发流量下每种类型仍能记到几条
+        if (DateTime.UtcNow >= this.nextDiagnosticResetUtc)
+        {
+            this.nextDiagnosticResetUtc = DateTime.UtcNow.AddSeconds(10);
+            this.diagnosticCounts.Clear();
         }
+
+        var count = this.diagnosticCounts.GetValueOrDefault(logKind);
+        if (count >= 3)
+            return;
+        this.diagnosticCounts[logKind] = count + 1;
+
+        Log(
+            $"[LKami9WhisperLogout][诊断] LogKind={(int)logKind}({logKind}) 文本={text}");
     }
 
     #endregion
@@ -792,23 +267,27 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         return false;
     }
 
-    private bool SenderAllowed(int senderAlias, string senderName)
+    /// <summary>发送者白名单：留空表示不限；支持名字（大小写按忽略大小写设置）。</summary>
+    private bool SenderAllowed(string sender)
     {
         this.RefreshCaches();
 
-        if (this.senderIdFilter.Count == 0 && this.senderNameFilter.Count == 0)
+        if (this.senderNameFilter.Count == 0)
             return true;
 
-        if (senderAlias != 0 && this.senderIdFilter.Contains(senderAlias))
-            return true;
-        if (!string.IsNullOrWhiteSpace(senderName))
-        {
-            var comparison = this.config.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            if (this.senderNameFilter.Any(name => string.Equals(name, senderName.Trim(), comparison)))
-                return true;
-        }
+        var comparison = this.config.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return this.senderNameFilter.Any(name => string.Equals(name, sender, comparison));
+    }
 
-        return false;
+    /// <summary>ChatType 白名单：留空表示不限；填写后用日志里看到的 LogKind 数字收紧（如只收私聊）。</summary>
+    private bool ChatTypeAllowed(XivChatType logKind)
+    {
+        this.RefreshCaches();
+
+        if (this.chatTypeFilter.Count == 0)
+            return true;
+
+        return this.chatTypeFilter.Contains((int)logKind);
     }
 
     private void RefreshCaches()
@@ -819,18 +298,19 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             this.keywordCache = SplitEntries(this.config.Keywords);
         }
 
-        if (!string.Equals(this.senderFilterCacheSource, this.config.SenderFilter, StringComparison.Ordinal))
+        if (!string.Equals(this.senderCacheSource, this.config.SenderFilter, StringComparison.Ordinal))
         {
-            this.senderFilterCacheSource = this.config.SenderFilter;
-            this.senderIdFilter = [];
-            this.senderNameFilter = [];
-            foreach (var entry in SplitEntries(this.config.SenderFilter))
-            {
-                if (int.TryParse(entry, NumberStyles.Integer, CultureInfo.InvariantCulture, out var aliasId))
-                    this.senderIdFilter.Add(aliasId);
-                else
-                    this.senderNameFilter.Add(entry);
-            }
+            this.senderCacheSource = this.config.SenderFilter;
+            this.senderNameFilter = SplitEntries(this.config.SenderFilter);
+        }
+
+        if (!string.Equals(this.chatTypeCacheSource, this.config.ChatTypeFilter, StringComparison.Ordinal))
+        {
+            this.chatTypeCacheSource = this.config.ChatTypeFilter;
+            this.chatTypeFilter = SplitEntries(this.config.ChatTypeFilter)
+                .Where(entry => int.TryParse(entry, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                .Select(int.Parse)
+                .ToList();
         }
     }
 
@@ -848,97 +328,16 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
     #endregion
 
-    #region 主循环
+    #region 登出
 
-    private void OnFrameworkUpdate(IFramework framework)
-    {
-        this.DrainHits();
-        this.DriveLogoutConfirm();
-
-        if (DateTime.UtcNow < this.nextProbeUtc)
-            return;
-
-        this.nextProbeUtc = DateTime.UtcNow.AddSeconds(5);
-
-        if (this.service == null || this.whisperHandler == null)
-        {
-            this.ProbeService();
-            return;
-        }
-
-        // 自建兜底实例超过 90 秒还连不上：丢弃重建，避免卡在一个坏状态里
-        if (this.serviceIsFallback && !this.IsConnected() &&
-            this.fallbackCreatedUtc != default && DateTime.UtcNow - this.fallbackCreatedUtc > TimeSpan.FromSeconds(90))
-        {
-            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 自建实例 90 秒未连接，丢弃重建");
-            this.UnsubscribeWhisper();
-            this.service = null;
-            this.serviceIsFallback = false;
-            this.connectAttempts = 0;
-            this.fallbackCreatedUtc = default;
-            this.nextInstanceSearchUtc = default;
-            this.ProbeService();
-            return;
-        }
-
-        if (this.IsConnected())
-        {
-            this.officialDisconnectNoted = false;
-            return;
-        }
-
-        if (this.serviceIsFallback)
-        {
-            // 只有自建实例才由本模块驱动连接：搞坏了也只影响自己，丢掉了再建一个即可。
-            // 绝不在 Omni 官方实例上调用任何方法——曾经这么做过，结果连接一抖动就被误干预，
-            // 把 Omni 自己的重连流程打断，导致 Omni 的国服频道整个进不去。
-            if (this.config.AutoConnect && this.connectAttempts < 10)
-            {
-                this.connectAttempts++;
-                this.TryConnectService();
-            }
-
-            return;
-        }
-
-        // 官方实例未连接：只提示，不代劳
-        if (!this.officialDisconnectNoted)
-        {
-            this.officialDisconnectNoted = true;
-            this.serviceNote = "Omni 的国服频道未连接，请在 Omni 聊天设置里重新连接（本模块不代替操作，以免干扰 Omni 的连接状态）。";
-            DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 官方频道服务未连接，仅提示不干预");
-        }
-    }
-
-    private void DrainHits()
-    {
-        while (this.hitQueue.TryDequeue(out var hit))
-        {
-            this.matchCount++;
-            this.lastHitSummary = $"{DateTime.Now:HH:mm:ss} {hit.SenderName}（化名 {hit.SenderAliasID}）：{hit.Text}";
-
-            if (this.config.NotifyInChat)
-                DalamudServices.ChatGUI.Print($"[频道私聊登出] 命中私聊：{hit.SenderName}：{hit.Text}");
-
-            if (hit.FromTest)
-            {
-                this.status = "模拟命中已处理（未登出）。";
-                continue;
-            }
-
-            if (this.config.LogoutOnMatch)
-                this.BeginLogout($"命中关键词：{hit.Text}");
-            else
-                this.status = $"命中私聊（仅提示模式）：{hit.Text}";
-        }
-    }
+    private void OnFrameworkUpdate(IFramework framework) => this.DriveLogoutConfirm();
 
     private void BeginLogout(string reason)
     {
         if (this.logoutPending)
             return;
 
-        if (DalamudServices.PlayerState.ContentId == 0)
+        if (!this.IsLoggedIn())
         {
             this.status = "当前未登录角色，跳过登出。";
             return;
@@ -964,7 +363,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         catch (Exception ex)
         {
             this.status = $"发送 /logout 失败：{ex.Message}";
-            DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 发送 /logout 失败：{ex}");
+            LogWarning($"[LKami9WhisperLogout] 发送 /logout 失败：{ex}");
             return;
         }
 
@@ -973,7 +372,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         this.logoutDialogSeenUtc = default;
         this.logoutDeadlineUtc = DateTime.UtcNow.AddSeconds(25);
         this.status = $"已发送 /logout（{reason}），等待确认框…";
-        DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 已通过游戏命令执行器发送 /logout（{reason}）");
+        Log($"[LKami9WhisperLogout] 已通过游戏命令执行器发送 /logout（{reason}）");
     }
 
     private void DriveLogoutConfirm()
@@ -985,7 +384,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         {
             this.logoutPending = false;
             this.status = "登出确认框未出现（可能在战斗 / 副本中，或已被手动处理）。";
-            DalamudServices.PluginLog.Warning("[LKami9WhisperLogout] 等待登出确认框超时（25 秒未见 SelectYesno 或未能点击）");
+            LogWarning("[LKami9WhisperLogout] 等待登出确认框超时（25 秒未见 SelectYesno 或未能点击）");
             return;
         }
 
@@ -996,95 +395,28 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             if (dialogVisible && !this.logoutDialogSeen)
             {
                 this.logoutDialogSeen = true;
-                DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 检测到登出确认框（SelectYesno），尝试点击“是”");
+                Log("[LKami9WhisperLogout] 检测到登出确认框（SelectYesno），尝试点击“是”");
             }
 
             if (AddonSelectYesnoEvent.ClickYes())
             {
                 this.logoutPending = false;
                 this.status = "已确认登出。";
-                DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 已点击登出确认框的“是”");
+                Log("[LKami9WhisperLogout] 已点击登出确认框的“是”");
             }
             else if (this.logoutDialogSeen && DateTime.UtcNow >= this.logoutDialogSeenUtc)
             {
                 // 对话框在，但点了至少 3 秒还没点上——大概率是节点没就绪，继续重试到超时
                 this.logoutDialogSeenUtc = DateTime.UtcNow.AddSeconds(3);
-                DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 确认框在场但尚未点上，继续重试");
+                Log("[LKami9WhisperLogout] 确认框在场但尚未点上，继续重试");
             }
         }
         catch (Exception ex)
         {
             this.logoutPending = false;
             this.status = $"点击登出确认框失败：{ex.Message}";
-            DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 点击登出确认框异常：{ex}");
+            LogWarning($"[LKami9WhisperLogout] 点击登出确认框异常：{ex}");
         }
-    }
-
-    /// <summary>
-    /// 未连接国服频道时尝试连接。服务类的连接方法名经过混淆，按签名找候选：
-    /// 返回 void/Task、参数为 0/1/2 个 bool 的实例方法（跳过属性与事件访问器）。
-    /// 若服务有 desiredConnected 字段，就逐个试到该字段被翻开为止——这样能确认
-    /// 真的踩到了连接开关，而不是误调了别的布尔方法。
-    /// </summary>
-    private void TryConnectService()
-    {
-        if (this.service == null || this.serviceType == null)
-            return;
-
-        var desiredField = this.serviceType.GetField("desiredConnected", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        var desiredBefore = desiredField?.GetValue(this.service) is true;
-
-        var candidates = this.serviceType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .Where(method =>
-            {
-                if (method.IsSpecialName)
-                    return false;
-                if (method.ReturnType != typeof(void) && method.ReturnType != typeof(Task))
-                    return false;
-
-                var parameters = method.GetParameters();
-                return parameters.Length == 0
-                    || (parameters.Length == 1 && parameters[0].ParameterType == typeof(bool))
-                    || (parameters.Length == 2 && parameters[0].ParameterType == typeof(bool) && parameters[1].ParameterType == typeof(bool));
-            })
-            .ToList();
-
-        foreach (var method in candidates)
-        {
-            var parameters = method.GetParameters();
-            object?[] arguments = parameters.Length switch
-            {
-                0 => [],
-                1 => [true],
-                _ => [true, true],
-            };
-
-            try
-            {
-                method.Invoke(this.service, arguments);
-            }
-            catch (Exception ex)
-            {
-                DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 调用 {method.Name} 失败：{ex.Message}");
-                continue;
-            }
-
-            DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 尝试连接国服频道（调用 {method.Name}）");
-
-            // desiredConnected 被翻开 → 就是连接开关，收工
-            if (desiredField != null && !desiredBefore && desiredField.GetValue(this.service) is true)
-            {
-                DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 确认 {method.Name} 为连接开关");
-                return;
-            }
-
-            // 没有 desiredConnected 字段可验证时，保守地只调一个
-            if (desiredField == null)
-                return;
-        }
-
-        if (candidates.Count == 0)
-            this.serviceNote = "未找到可调用的连接方法，请在 Omni 中手动连接国服频道。";
     }
 
     #endregion
@@ -1097,8 +429,8 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         {
             case "test":
                 this.RefreshCaches();
-                this.hitQueue.Enqueue(new WhisperHit("（测试）", 0, this.keywordCache.Count > 0 ? this.keywordCache[0] : "测试命中", true));
-                this.status = "已模拟一次命中。";
+                this.status = "已模拟一次命中（未登出）。";
+                PrintToChat($"[频道私聊登出] 模拟命中：{this.config.Keywords}（未登出）");
                 return true;
 
             case "logout":
@@ -1111,6 +443,58 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
             default:
                 return false;
+        }
+    }
+
+    /// <summary>游戏聊天框输出；ChatGui 不可用时静默。</summary>
+    private static void PrintToChat(string message)
+    {
+        try
+        {
+            DalamudServices.ChatGUI?.Print(message);
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
+
+    /// <summary>是否已登录角色；读不到状态时放行（让游戏的命令执行器自己去判断）。</summary>
+    private bool IsLoggedIn()
+    {
+        try
+        {
+            return DalamudServices.PlayerState == null || DalamudServices.PlayerState.ContentId != 0;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    /// <summary>安全日志：PluginLog 因故不可用时静默，绝不影响主流程、更别在 catch 里二次抛异常。</summary>
+    private static void Log(string message)
+    {
+        try
+        {
+            DalamudServices.PluginLog?.Information(message);
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
+
+    /// <summary>安全警告日志。</summary>
+    private static void LogWarning(string message)
+    {
+        try
+        {
+            DalamudServices.PluginLog?.Warning(message);
+        }
+        catch
+        {
+            // 忽略
         }
     }
 
@@ -1133,10 +517,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             return;
         this.nextStatusPrintUtc = DateTime.UtcNow.AddSeconds(3);
 
-        var state = this.service == null
-            ? this.serviceNote
-            : $"化名 {this.GetSelfAliasId()}，{(this.IsConnected() ? "已连接" : "未连接")}，命中 {this.matchCount} 次";
-        DalamudServices.ChatGUI.Print($"[频道私聊登出] {state}");
+        PrintToChat($"[频道私聊登出] 监听中，命中 {this.matchCount} 次");
     }
 
     public override bool DrawSettings()
@@ -1144,37 +525,10 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         var changed = false;
 
         ImGui.TextWrapped(this.status);
-        if (!string.IsNullOrEmpty(this.serviceNote))
-            ImGui.TextDisabled(this.serviceNote);
-
         ImGui.Spacing();
 
-        // ── 服务状态 ──
+        // ── 匹配规则 ──
         ImGui.Separator();
-        if (this.service == null)
-        {
-            ImGui.TextColored(this.BadVec, "国服频道服务：未就绪");
-        }
-        else
-        {
-            var connected = this.IsConnected();
-            ImGui.TextColored(connected ? this.GoodVec : this.WarnVec, connected ? "国服频道：已连接" : "国服频道：未连接（私聊送不进来）");
-            ImGui.SameLine();
-            ImGui.TextDisabled($"自己的化名 ID：{this.GetSelfAliasId()}");
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("刷新状态##whisperRefresh") && this.ActionAllowed())
-        {
-            this.nextInstanceSearchUtc = default;
-            this.nextFallbackUtc = default;
-            this.ProbeService();
-            this.ReportStatus();
-        }
-
-        ImGui.Spacing();
-
-        // ── 关键词 ──
         ImGui.Text("命中关键词（逗号 / 分号 / 换行分隔，留空则不触发）");
         var keywords = this.config.Keywords;
         if (ImGui.InputText("##whisperKeywords", ref keywords, 512))
@@ -1197,9 +551,49 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             changed = true;
         }
 
+        ImGui.Text("消息分隔符（Omni 频道消息格式：发送者 >> 内容）");
+        var separator = this.config.Separator;
+        if (ImGui.InputText("##whisperSeparator", ref separator, 32))
+        {
+            this.config.Separator = separator;
+            changed = true;
+        }
+
+        ImGui.Spacing();
+
+        // ── 收窄规则（可选）──
+        ImGui.Separator();
+        ImGui.Text("只接受这些发送者（可选：名字，逗号分隔，留空不限）");
+        var senderFilter = this.config.SenderFilter;
+        if (ImGui.InputText("##whisperSenderFilter", ref senderFilter, 256))
+        {
+            this.config.SenderFilter = senderFilter;
+            changed = true;
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("公聊和私聊在聊天框里格式相同，若只想让私聊触发，可配合下面的 ChatType 过滤。");
+
+        ImGui.Text("只接受这些 ChatType（可选：LogKind 数字，逗号分隔，留空不限）");
+        var chatTypeFilter = this.config.ChatTypeFilter;
+        if (ImGui.InputText("##whisperChatTypeFilter", ref chatTypeFilter, 128))
+        {
+            this.config.ChatTypeFilter = chatTypeFilter;
+            changed = true;
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("开启下方“诊断日志”后发一条私聊，日志里会打印该消息的 LogKind 数字，填到这里即可只收私聊。");
+
+        var diagnostics = this.config.Diagnostics;
+        if (ImGui.Checkbox("诊断日志（记录频道消息的 ChatType，便于收紧规则）", ref diagnostics))
+        {
+            this.config.Diagnostics = diagnostics;
+            changed = true;
+        }
+
         ImGui.Spacing();
 
         // ── 动作 ──
+        ImGui.Separator();
         var logoutOnMatch = this.config.LogoutOnMatch;
         if (ImGui.Checkbox("命中后自动登出游戏", ref logoutOnMatch))
         {
@@ -1214,26 +608,6 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             changed = true;
         }
 
-        var autoConnect = this.config.AutoConnect;
-        if (ImGui.Checkbox("未连接时自动连接国服频道", ref autoConnect))
-        {
-            this.config.AutoConnect = autoConnect;
-            changed = true;
-        }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("连接后会出现在频道成员列表里；不想在线时可关掉本模块。");
-
-        ImGui.Spacing();
-
-        // ── 发送者过滤（可选）──
-        ImGui.Text("只接受这些发送者（可选：化名 ID 或名字，逗号分隔，留空不限）");
-        var senderFilter = this.config.SenderFilter;
-        if (ImGui.InputText("##whisperSenderFilter", ref senderFilter, 256))
-        {
-            this.config.SenderFilter = senderFilter;
-            changed = true;
-        }
-
         ImGui.Spacing();
         ImGui.Separator();
 
@@ -1243,9 +617,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
         ImGui.SameLine();
         if (ImGui.Button("测试完整流程（含登出）##whisperTestFull") && this.ActionAllowed())
-        {
             this.BeginLogout("手动测试");
-        }
 
         ImGui.SameLine();
         if (ImGui.Button("立即登出##whisperLogoutNow") && this.ActionAllowed())
@@ -1260,7 +632,8 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
     #endregion
 
-    private readonly record struct WhisperHit(string SenderName, int SenderAliasID, string Text, bool FromTest);
+    private DateTime nextActionUtc;
+    private DateTime nextStatusPrintUtc;
 }
 
 /// <summary>模块配置（宿主按 Config 后缀成员绑定并保存）。</summary>
@@ -1275,25 +648,21 @@ public sealed class LKami9WhisperLogoutConfig
     /// <summary>匹配时忽略大小写。</summary>
     public bool IgnoreCase { get; set; } = true;
 
+    /// <summary>Omni 频道消息里发送者与内容之间的分隔符，默认“ &gt;&gt; ”。</summary>
+    public string Separator { get; set; } = " >> ";
+
+    /// <summary>发送者白名单：只接受这些名字（逗号分隔）；留空表示不限发送者。</summary>
+    public string SenderFilter { get; set; } = string.Empty;
+
+    /// <summary>ChatType 白名单：只接受这些 LogKind 数字（逗号分隔）；留空表示不限。</summary>
+    public string ChatTypeFilter { get; set; } = string.Empty;
+
     /// <summary>命中后执行 /logout 并点确认框；关闭则只在聊天框提示。</summary>
     public bool LogoutOnMatch { get; set; } = true;
 
     /// <summary>命中时在游戏聊天框打印一条提示。</summary>
     public bool NotifyInChat { get; set; } = true;
 
-    /// <summary>国服频道未连接时，模块尝试驱动连接（会让自己出现在频道成员列表）。</summary>
-    public bool AutoConnect { get; set; } = true;
-
-    /// <summary>发送者过滤：化名 ID 或显示名，逗号分隔；留空表示不限发送者。</summary>
-    public string SenderFilter { get; set; } = string.Empty;
-}
-
-/// <summary>按引用比较对象，供对象图遍历去重（不用默认的 Equals/GetHashCode）。</summary>
-internal sealed class ReferenceComparer : IEqualityComparer<object>
-{
-    public static readonly ReferenceComparer Instance = new();
-
-    public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
-
-    public int GetHashCode(object obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+    /// <summary>打印频道消息的 ChatType 诊断日志（每种类型限流 3 条 / 10 秒）。</summary>
+    public bool Diagnostics { get; set; } = true;
 }
