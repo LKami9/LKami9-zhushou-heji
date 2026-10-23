@@ -45,11 +45,11 @@
       "InternalName": "LKami9WhisperLogout",
       "Name": "LKami9频道私聊登出",
       "Author": "LKami9",
-      "Description": "监听游戏聊天框里的 Omni 国服频道私聊，命中关键词自动 /logout；用“发送者字段为空”特征精确区分游戏自带私信与 Omni 频道私聊。",
-      "Version": "1.1.1",
+      "Description": "监听游戏聊天框里的 Omni 国服频道私聊，命中关键词自动 /logout；区分游戏私信；带 30 秒监听上报与详细诊断日志。",
+      "Version": "1.1.2",
       "MinimumOmniVersion": "1.1.7.0",
       "File": "Modules/LKami9WhisperLogout.cs",
-      "Sha256": "9C5F48821220DF5F1BE3DE8D4C1B342F4B4BC6E6CFCC0074B198ACD4B8CEB29A"
+      "Sha256": "5C2B2EB9DAAE16B6BECC20258D4458B75E9F27B1C8AFD8E7E9292094F605748D"
     }
   ]
 }

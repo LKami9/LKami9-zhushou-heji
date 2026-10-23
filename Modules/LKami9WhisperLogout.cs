@@ -66,6 +66,10 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
     private string lastHitSummary = "还没有命中记录。";
     private int matchCount;
 
+    private int messageWindowCount;
+    private int channelLikeWindowCount;
+    private DateTime nextReportUtc;
+
     private List<string> keywordCache = [];
     private string keywordCacheSource = "\u0000";
     private List<int> chatTypeFilter = [];
@@ -88,6 +92,8 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         this.status = "正在监听聊天框…";
         this.SubscribeChat();
         this.SubscribeFramework();
+        this.nextReportUtc = DateTime.UtcNow.AddSeconds(30);
+        Log("[LKami9WhisperLogout] 模块已启用，已订阅 ChatMessage 事件（每 30 秒上报一次监听情况）");
     }
 
     protected override void OnDisable()
@@ -96,6 +102,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         this.UnsubscribeFramework();
         this.logoutPending = false;
         this.status = "已停止监听。";
+        Log("[LKami9WhisperLogout] 模块已停用，已退订 ChatMessage 事件");
     }
 
     protected override void OnDispose()
@@ -155,6 +162,11 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
+            // 计数用于定期上报：判断 ChatMessage 事件到底通不通
+            this.messageWindowCount++;
+            if (text.Contains(" >> ", StringComparison.Ordinal))
+                this.channelLikeWindowCount++;
+
             // 发送者字段：游戏原生消息（私信/说话/队伍等）Dalamud 会填入发送者名字；
             // 而 Omni 是把「名字 >> 内容」作为一整串用 ChatGui.Print 打出来的，
             // Print 的签名里没有 sender 参数，所以这类消息的 Sender 一定是空的。
@@ -169,8 +181,8 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
                 senderField = string.Empty;
             }
 
-            // 诊断：把频道格式的消息详情打出来，便于第一次使用时确认私聊/公聊的实际格式与 chat type
-            this.LogDiagnostic(message.LogKind, senderField, text);
+            // 诊断：把频道格式的消息详情打出来，便于第一次使用时确认实际格式
+            this.LogDiagnostic(message, senderField, text);
 
             if (!this.TryParseChannelMessage(text, out var sender, out var content))
                 return;
@@ -225,12 +237,14 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         return sender.Length > 0 && content.Length > 0;
     }
 
-    private void LogDiagnostic(XivChatType logKind, string senderField, string text)
+    private void LogDiagnostic(IHandleableChatMessage message, string senderField, string text)
     {
         if (!this.config.Diagnostics)
             return;
         if (!text.Contains(" >> ", StringComparison.Ordinal))
             return;
+
+        var logKind = message.LogKind;
 
         // 每 10 秒清一次计数，保证突发流量下每种类型仍能记到几条
         if (DateTime.UtcNow >= this.nextDiagnosticResetUtc)
@@ -244,8 +258,11 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             return;
         this.diagnosticCounts[logKind] = count + 1;
 
+        var textValue = SafeText(() => message.Message.TextValue);
+        var original = SafeText(() => message.OriginalMessage.ToString());
         Log(
-            $"[LKami9WhisperLogout][诊断] LogKind={(int)logKind}({logKind}) Sender=\"{senderField}\" 文本={text}");
+            $"[LKami9WhisperLogout][诊断] LogKind={(int)logKind}({logKind}) Sender=\"{senderField}\" " +
+            $"文本=\"{text}\" TextValue=\"{textValue}\" Original=\"{original}\"");
     }
 
     #endregion
@@ -349,7 +366,29 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
     #region 登出
 
-    private void OnFrameworkUpdate(IFramework framework) => this.DriveLogoutConfirm();
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        this.ReportWindow();
+        this.DriveLogoutConfirm();
+    }
+
+    /// <summary>
+    /// 每 30 秒上报一次监听情况，用于一锤定音定位问题：
+    /// 收到 0 条 = ChatMessage 事件通道不通（Omni 可能走游戏原生日志，不走 Dalamud）；
+    /// 收到 N 条但 >> 为 0 = 事件正常、但 Omni 消息不经此通道；
+    /// >> 大于 0 = 事件与消息都正常，问题在匹配规则（配合诊断日志看实际格式）。
+    /// </summary>
+    private void ReportWindow()
+    {
+        if (DateTime.UtcNow < this.nextReportUtc)
+            return;
+
+        this.nextReportUtc = DateTime.UtcNow.AddSeconds(30);
+        Log($"[LKami9WhisperLogout] 监听上报：最近 30 秒收到 {this.messageWindowCount} 条聊天消息，" +
+            $"其中含 >> 的 {this.channelLikeWindowCount} 条；累计命中 {this.matchCount} 次");
+        this.messageWindowCount = 0;
+        this.channelLikeWindowCount = 0;
+    }
 
     private void BeginLogout(string reason)
     {
@@ -488,6 +527,19 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         catch
         {
             return true;
+        }
+    }
+
+    /// <summary>安全取文本：任何异常都返回空串，不让诊断把主流程带崩。</summary>
+    private static string SafeText(Func<string> read)
+    {
+        try
+        {
+            return read() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
