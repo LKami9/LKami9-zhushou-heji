@@ -11,6 +11,10 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Plugin.Services;
 using OmenTools.Interop.Game.AddonEvent;
 
+using FFXIVClientStructs.FFXIV.Client.System.String;
+using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Shell;
+
 using OmniToolbox.Common.Module.Abstractions;
 using OmniToolbox.Common.Module.Enums;
 using OmniToolbox.Common.Module.Models;
@@ -34,7 +38,7 @@ namespace LKami9.WhisperLogout;
 /// - 登出走 Dalamud 命令通道（/logout），确认框用 OmenTools 的 AddonSelectYesnoEvent.ClickYes()，
 ///   与 Omni 自动登录模块同一套做法。
 /// </summary>
-public sealed class LKami9WhisperLogout : ModuleBase
+public sealed unsafe class LKami9WhisperLogout : ModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
@@ -68,6 +72,8 @@ public sealed class LKami9WhisperLogout : ModuleBase
     private readonly ConcurrentQueue<WhisperHit> hitQueue = [];
     private bool frameworkSubscribed;
     private bool logoutPending;
+    private bool logoutDialogSeen;
+    private DateTime logoutDialogSeenUtc;
     private DateTime logoutDeadlineUtc;
     private DateTime nextProbeUtc;
     private int connectAttempts;
@@ -895,7 +901,20 @@ public sealed class LKami9WhisperLogout : ModuleBase
 
         try
         {
-            DalamudServices.CommandManager.ProcessCommand("/logout");
+            // 必须走游戏自己的文本命令执行器：
+            // Dalamud 的 ICommandManager.ProcessCommand 只查 Dalamud 自己注册的命令表，
+            // 查不到就静默 return false，根本不会把 /logout 交给游戏（实测表现为毫无反应）。
+            // RaptureShellModule.ExecuteCommandInner 就是游戏处理聊天框命令的那条路。
+            var command = Utf8String.FromString("/logout");
+            try
+            {
+                RaptureShellModule.Instance()->ExecuteCommandInner(command, UIModule.Instance());
+            }
+            finally
+            {
+                // Utf8String 的 Dispose 在 FCS 里是私有的，无法主动释放；
+                // 一次性命令字符串的少量原生分配可忽略（不会每次调用都发生）。
+            }
         }
         catch (Exception ex)
         {
@@ -905,8 +924,11 @@ public sealed class LKami9WhisperLogout : ModuleBase
         }
 
         this.logoutPending = true;
+        this.logoutDialogSeen = false;
+        this.logoutDialogSeenUtc = default;
         this.logoutDeadlineUtc = DateTime.UtcNow.AddSeconds(25);
         this.status = $"已发送 /logout（{reason}），等待确认框…";
+        DalamudServices.PluginLog.Information($"[LKami9WhisperLogout] 已通过游戏命令执行器发送 /logout（{reason}）");
     }
 
     private void DriveLogoutConfirm()
@@ -918,21 +940,38 @@ public sealed class LKami9WhisperLogout : ModuleBase
         {
             this.logoutPending = false;
             this.status = "登出确认框未出现（可能在战斗 / 副本中，或已被手动处理）。";
+            DalamudServices.PluginLog.Warning("[LKami9WhisperLogout] 等待登出确认框超时（25 秒未见 SelectYesno 或未能点击）");
             return;
         }
 
         try
         {
+            // 对话框是否在场单独判断一次，便于区分“没弹窗”和“弹了没点上”
+            var dialogVisible = OmenTools.Info.Game.Data.Addons.SelectYesno != null;
+            if (dialogVisible && !this.logoutDialogSeen)
+            {
+                this.logoutDialogSeen = true;
+                DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 检测到登出确认框（SelectYesno），尝试点击“是”");
+            }
+
             if (AddonSelectYesnoEvent.ClickYes())
             {
                 this.logoutPending = false;
                 this.status = "已确认登出。";
+                DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 已点击登出确认框的“是”");
+            }
+            else if (this.logoutDialogSeen && DateTime.UtcNow >= this.logoutDialogSeenUtc)
+            {
+                // 对话框在，但点了至少 3 秒还没点上——大概率是节点没就绪，继续重试到超时
+                this.logoutDialogSeenUtc = DateTime.UtcNow.AddSeconds(3);
+                DalamudServices.PluginLog.Information("[LKami9WhisperLogout] 确认框在场但尚未点上，继续重试");
             }
         }
         catch (Exception ex)
         {
             this.logoutPending = false;
             this.status = $"点击登出确认框失败：{ex.Message}";
+            DalamudServices.PluginLog.Warning($"[LKami9WhisperLogout] 点击登出确认框异常：{ex}");
         }
     }
 
