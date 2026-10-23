@@ -187,16 +187,15 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
             if (!this.TryParseChannelMessage(text, out var sender, out var content))
                 return;
 
-            // 只收“发送者字段为空”的消息 = 插件 Print 出来的整串消息（Omni 频道消息）
-            if (this.config.RequireEmptySender && !string.IsNullOrWhiteSpace(senderField))
+            // 含 >> 的消息逐步检查。检查本身必须总是执行（与诊断开关无关——否则关掉诊断
+            // 就等于跳过所有过滤直接命中）；只有“把未命中原因写进日志”才受 Diagnostics 控制。
+            var reject = this.FindRejectReason(message.LogKind, senderField, sender, content);
+            if (reject != null)
+            {
+                if (this.config.Diagnostics)
+                    this.LogDiagnostic(message, senderField, text, reject);
                 return;
-
-            if (!this.ChatTypeAllowed(message.LogKind))
-                return;
-            if (!this.SenderAllowed(sender))
-                return;
-            if (!this.IsMatch(content))
-                return;
+            }
 
             this.matchCount++;
             this.lastHitSummary = $"{DateTime.Now:HH:mm:ss} {sender}：{content}";
@@ -237,7 +236,7 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         return sender.Length > 0 && content.Length > 0;
     }
 
-    private void LogDiagnostic(IHandleableChatMessage message, string senderField, string text)
+    private void LogDiagnostic(IHandleableChatMessage message, string senderField, string text, string? reject = null)
     {
         if (!this.config.Diagnostics)
             return;
@@ -260,9 +259,10 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
 
         var textValue = SafeText(() => message.Message.TextValue);
         var original = SafeText(() => message.OriginalMessage.ToString());
+        var suffix = reject != null ? " " + reject : " [命中]";
         Log(
             $"[LKami9WhisperLogout][诊断] LogKind={(int)logKind}({logKind}) Sender=\"{senderField}\" " +
-            $"文本=\"{text}\" TextValue=\"{textValue}\" Original=\"{original}\"");
+            $"文本=\"{text}\" TextValue=\"{textValue}\" Original=\"{original}\"{suffix}");
     }
 
     #endregion
@@ -530,6 +530,25 @@ public sealed unsafe class LKami9WhisperLogout : ModuleBase
         }
     }
 
+    /// <summary>返回未命中原因；全部通过返回 null。</summary>
+    private string? FindRejectReason(XivChatType logKind, string senderField, string sender, string content)
+    {
+        // 只收“发送者字段为空”的消息（默认关，见配置注释）
+        if (this.config.RequireEmptySender && !string.IsNullOrWhiteSpace(senderField))
+            return $"未命中：Sender 非空被挡（Sender=\"{senderField}\"，可关掉“只收 Omni 频道私聊”开关）";
+
+        if (!this.ChatTypeAllowed(logKind))
+            return $"未命中：ChatType 被挡（LogKind={(int)logKind} 不在白名单）";
+
+        if (!this.SenderAllowed(sender))
+            return $"未命中：发送者不在白名单（{sender}）";
+
+        if (!this.IsMatch(content))
+            return $"未命中：关键词不匹配（内容=\"{content}\"，关键词=\"{this.config.Keywords}\"）";
+
+        return null;
+    }
+
     /// <summary>安全取文本：任何异常都返回空串，不让诊断把主流程带崩。</summary>
     private static string SafeText(Func<string> read)
     {
@@ -747,9 +766,10 @@ public sealed class LKami9WhisperLogoutConfig
     public bool Diagnostics { get; set; } = true;
 
     /// <summary>
-    /// 只接受“发送者字段为空”的消息。Omni 频道消息是插件 Print 出来的整串文本
-    /// （名字 &gt;&gt; 内容），Sender 字段为空；游戏原生私信的 Sender 是对方角色名。
-    /// 开着即可把游戏自带私信挡在外面，只收 Omni 频道私聊。
+    /// 只接受“发送者字段为空”的消息。默认关闭：Omni 用 XivChatEntry 打印频道消息时
+    /// 可能自带 Sender（发送者名字），开着会误挡；而游戏原生私信的 Message 是纯内容、
+    /// 本来就不含 " >> "，靠分隔符就能挡住，不需要这个判断。
+    /// 仅当发现游戏私信也带 " >> " 格式时才需要手动打开。
     /// </summary>
-    public bool RequireEmptySender { get; set; } = true;
+    public bool RequireEmptySender { get; set; } = false;
 }
