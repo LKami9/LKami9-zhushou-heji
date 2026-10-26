@@ -1,6 +1,6 @@
 # LKami9 助手合集（OmniToolbox / TreeHouse 在线模块）
 
-一个链接装五个模块：
+一个链接装六个模块：
 
 | 模块 | InternalName | 文件 |
 |---|---|---|
@@ -9,6 +9,7 @@
 | LKami9幻卡包助手 | `LKami9TriadCardPacks` | `Modules/LKami9TriadCardPacks.cs` |
 | LKami9秘录助手 | `LKami9FolkloreBooks` | `Modules/LKami9FolkloreBooks.cs` |
 | LKami9国服频道私聊守卫 | `LKami9ChannelWhisperGuard` | `Modules/LKami9ChannelWhisperGuard.cs` |
+| LKami9农村人助手 | `AutoLimsaOnArrival` | `Modules/AutoLimsaOnArrival.cs` |
 
 仓库地址（填到 OmniToolbox → 在线仓库）：
 
@@ -20,6 +21,10 @@ https://raw.githubusercontent.com/LKami9/LKami9-zhushou-heji/main/TreeHouseModul
 所以换用这个合集链接不会丢设置；原来的链接可以删掉。
 
 ## 变更记录
+
+- 2026-10-26：新增 `AutoLimsaOnArrival`（LKami9农村人助手）v1.0.0：跨服/超域传送落地稳定后，
+  若不在海都就调用原生 `Telepo` 传送到利姆萨·罗敏萨大水晶；服务器记录写在 `pluginConfigs\OmniToolbox\AutoLimsa.state`，
+  关客户端再登录也不会丢，短命令 `/L9HD GO`、`/L9HD rset`。
 
 - 2026-10-24：新增 `LKami9ChannelWhisperGuard`（国服频道私聊守卫）v1.0.3。它取代已移除的 `LKami9WhisperLogout`：
   走 Omni 国服频道客户端的 `WhisperReceived` 事件判定正文，命中后经 OmenTools 命令通道执行 `/logout`；

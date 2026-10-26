@@ -50,6 +50,16 @@
       "MinimumOmniVersion": "1.1.8.0",
       "File": "Modules/LKami9ChannelWhisperGuard.cs",
       "Sha256": "08A795BEC338B0C6D53A78F16DBB0273DC323DCB8063D7D76F9EFE915D7EC9DD"
+    },
+    {
+      "InternalName": "AutoLimsaOnArrival",
+      "Name": "LKami9农村人助手",
+      "Author": "LKami9",
+      "Description": "跨服或超域传送落地后，自动传送到利姆萨·罗敏萨（海都）的大水晶；只做传送，不模拟按键、不寻路、不改内存。",
+      "Version": "1.0.0",
+      "MinimumOmniVersion": "1.1.3.0",
+      "File": "Modules/AutoLimsaOnArrival.cs",
+      "Sha256": "FE401347213B3AFDE24109D8C176949C7C09D1095D872AFA87FD5EEA9130D5E6"
     }
   ]
 }
