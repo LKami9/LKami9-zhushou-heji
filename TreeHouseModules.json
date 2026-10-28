@@ -2,64 +2,100 @@
   "SchemaVersion": 1,
   "Modules": [
     {
-      "InternalName": "LKami9TitleHelper",
-      "Name": "LKami9称号助手",
+      "InternalName": "AutoLimsaOnArrival",
       "Author": "LKami9",
-      "Description": "改为手动解锁检测：只有点击「立即检测」或使用 /L9CHH detect 时扫描已解锁称号，并保存本地快照；后续加载快照，再次点击更新。",
-      "Version": "2.13.0",
-      "MinimumOmniVersion": "1.1.7.0",
-      "File": "Modules/LKami9TitleHelper.cs",
-      "Sha256": "53671FEC7DE4BD6035EEB8F25D03315C75DDFE34E5F4E85FA919ECF403BD5095"
-    },
-    {
-      "InternalName": "LKami9GlamourHelper",
-      "Name": "LKami9幻化助手",
-      "Author": "LKami9",
-      "Description": "独立窗口（识别与装备 / 幻化预设）+ /L9HH 短命令：识别石之家截图、显示持有与获取方式、写入/应用幻化模板、本地试穿；整合 Omni「更好的幻化管理」预设编辑、发型/眼镜、套装自动试穿；角色快捷栏可拖拽并与 Omni 窗口同侧，窗口底板随主题明暗自适应。",
-      "Version": "1.19.0.0",
-      "MinimumOmniVersion": "1.1.7.0",
-      "File": "Modules/LKami9GlamourHelper.cs",
-      "Sha256": "A6B6113D66073851F9AEC762FA3798FDF3BCADC24D6F9026781CE2D2D57162BC"
-    },
-    {
-      "InternalName": "LKami9TriadCardPacks",
-      "Name": "LKami9幻卡包助手",
-      "Author": "LKami9",
-      "Description": "列出各幻卡包内含的幻卡与持有情况，可自动使用背包中未持有的幻卡、自动开幻卡包；短命令 /L9KH 一键重检，悬停弹出卡包内容提示，颜色跟随 Omni 主题。",
-      "Version": "1.2.0",
-      "MinimumOmniVersion": "1.1.7.0",
-      "File": "Modules/LKami9TriadCardPacks.cs",
-      "Sha256": "1C3DA86CBAD332BAC19A6B47C7556D7ED9E043942C6ECFB1CBAA1C50FE541869"
-    },
-    {
-      "InternalName": "LKami9FolkloreBooks",
-      "Name": "LKami9秘录助手",
-      "Author": "LKami9",
-      "Description": "独立窗口 + /L9ML 短命令：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口，支持自动使用，材料名可点击复制。",
-      "Version": "1.0.2",
-      "MinimumOmniVersion": "1.1.7.0",
-      "File": "Modules/LKami9FolkloreBooks.cs",
-      "Sha256": "A5952CD59B7784CFB456DD1ECBB65B35E0539D859B9A03D627713A5DFA2BC17C"
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "2.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/AutoLimsaOnArrival.cs",
+      "Sha256": "260D9B79598A7A94A33C053D7D6207DE7CE95C492334E9A72615A5927F90ABFC",
+      "Localization": {
+        "Source": {
+          "Title": "LKami9农村人助手",
+          "Description": "跨服或超域传送落地后，自动传送到利姆萨·罗敏萨的大水晶。"
+        }
+      }
     },
     {
       "InternalName": "LKami9ChannelWhisperGuard",
-      "Name": "LKami9国服频道私聊守卫",
       "Author": "LKami9",
-      "Description": "监听 Omni 国服频道私聊，正文命中关键词后自动登出游戏，也可只提醒；发送者过滤支持显示名/服务器/化名编号，匹配方式含包含/完全相等/通配符，带命中冷却与聊天框提示。",
-      "Version": "1.0.3",
-      "MinimumOmniVersion": "1.1.8.0",
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "2.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9ChannelWhisperGuard.cs",
-      "Sha256": "08A795BEC338B0C6D53A78F16DBB0273DC323DCB8063D7D76F9EFE915D7EC9DD"
+      "Sha256": "D5A2E223D80DBF9E3B4DC4DF80497193C131C285390B45377000823B94AD4D61",
+      "Localization": {
+        "Source": {
+          "Title": "国服频道私聊守卫",
+          "Description": "监听 Omni 国服频道私聊，正文命中指定内容后自动登出游戏，也可以只提醒。"
+        }
+      }
     },
     {
-      "InternalName": "AutoLimsaOnArrival",
-      "Name": "LKami9农村人助手",
+      "InternalName": "LKami9FolkloreBooks",
       "Author": "LKami9",
-      "Description": "跨服或超域传送落地后，自动传送到利姆萨·罗敏萨（海都）的大水晶；只做传送，不模拟按键、不寻路、不改内存。",
-      "Version": "1.0.0",
-      "MinimumOmniVersion": "1.1.3.0",
-      "File": "Modules/AutoLimsaOnArrival.cs",
-      "Sha256": "FE401347213B3AFDE24109D8C176949C7C09D1095D872AFA87FD5EEA9130D5E6"
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "2.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/LKami9FolkloreBooks.cs",
+      "Sha256": "8C922BD2E0BC9A9F88DFBC5762EC8E5D0180BFBCAC13B2BCC76E5314F656104A",
+      "Localization": {
+        "Source": {
+          "Title": "LKami9秘录助手",
+          "Description": "独立窗口 + /L9ML 短命令：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口，支持自动使用，材料名可点击复制。"
+        }
+      }
+    },
+    {
+      "InternalName": "LKami9GlamourHelper",
+      "Author": "LKami9",
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "2.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/LKami9GlamourHelper.cs",
+      "Sha256": "57195D04B55B22AAF59C30E97AD4EC1D28D1D551081CFE4092D96117EDE6D875",
+      "Localization": {
+        "Source": {
+          "Title": "LKami9幻化助手",
+          "Description": "独立窗口（识别与装备 / 幻化预设）+ /L9HH 短命令：识别石之家截图、显示持有与获取方式、写入/应用幻化模板、本地试穿；整合 Omni「更好的幻化管理」预设编辑、发型/眼镜、套装自动试穿；角色快捷栏可拖拽并与 Omni 窗口同侧，窗口底板随主题明暗自适应。"
+        }
+      }
+    },
+    {
+      "InternalName": "LKami9TitleHelper",
+      "Author": "LKami9",
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "3.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/LKami9TitleHelper.cs",
+      "Sha256": "685BAB8974C1BBC7222DF026B86EE3F95660425A99C0C2205C5F8B1FACDAAD5F",
+      "Localization": {
+        "Source": {
+          "Title": "LKami9称号助手",
+          "Description": "独立窗口：检索称号、一键佩戴、查看未解锁称号的获取方式。界面与配色跟随 Omni 本体主题。"
+        }
+      }
+    },
+    {
+      "InternalName": "LKami9TriadCardPacks",
+      "Author": "LKami9",
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "2.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/LKami9TriadCardPacks.cs",
+      "Sha256": "64699022D299FB05EA5C93BA026DC913AC26E5859B882892D8C1ED804654FE10",
+      "Localization": {
+        "Source": {
+          "Title": "LKami9幻卡包助手",
+          "Description": "列出各幻卡包内含的幻卡与持有情况，可自动使用背包中未持有的幻卡、自动开幻卡包；短命令 /L9KH 一键重检，悬停弹出卡包内容提示，颜色跟随 Omni 主题。"
+        }
+      }
     }
   ]
 }

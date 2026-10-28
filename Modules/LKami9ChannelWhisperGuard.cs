@@ -25,7 +25,7 @@ namespace OmniToolbox.TreeHouseOnline;
 ///      再从三路对象根出发做宽度优先搜索拿到活动实例：
 ///        · Dalamud 服务里的本插件实例：PluginManager 是全局服务，插件作用域拿不到，
 ///          必须走 Service&lt;PluginManager&gt;.GetNullable()（Plugin → OmniHost → ... → 频道客户端）
-///        · 宿主挂在 ModuleBase 上的内部回调（通常是模块管理器）
+///        · 宿主挂在 OmniModuleBase 上的内部回调（通常是模块管理器）
 ///        · 都找不到时，扫一遍 Omni 程序集的静态字段兜底
 ///      整个定位过程放后台线程跑（第一版在主线程扫，直接卡出 1.7 秒的 HITCH），主线程只收结果。
 ///   2) 订阅事件：客户端上有 public event Action&lt;ChannelWhisper&gt; WhisperReceived。
@@ -35,13 +35,15 @@ namespace OmniToolbox.TreeHouseOnline;
 ///   4) 登出：ICommandManager.ProcessCommand("/logout")。
 ///      不用 OmenTools 的 ChatManager.Instance() —— 服务定位器在在线模块里可能拿不到实例（静默无效）。
 /// </summary>
-public sealed class LKami9ChannelWhisperGuard : ModuleBase
+[ModuleApiVersion(1)]
+public sealed class LKami9ChannelWhisperGuard : OmniModuleBase
 {
     private const string LogTag = "[频道守卫]";
 
-    private static readonly string[] ModeNames = ["包含", "完全相等", "通配符 (* ?)"];
+    // 匹配方式的本地化键，顺序必须与 MatchMode 的 0/1/2 对齐
+    private static readonly string[] ModeKeys = ["ModeContains", "ModeExact", "ModeWildcard"];
 
-    // 宿主按「以 Config 结尾的成员」绑定并自动保存这个对象，模块里没有 config.Save()
+    // 宿主按名为 config 的成员绑定并自动保存这个对象，模块里没有 config.Save()
     private LKami9ChannelWhisperGuardConfig config = new();
 
     // 私聊先入队，主线程再消费
@@ -70,7 +72,9 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
     private volatile bool scanResultReady;
     private int scanAttempts;
     private object? scanResultClient;
-    private string scanResultStatus = string.Empty;
+    private string scanResultStatusKey = "StatusIdle";
+    private object[] scanResultStatusArgs = Array.Empty<object>();
+    private bool scanResultStatusBad;
     private string scanResultChain = "-";
     private string scanResultRoots = "-";
 
@@ -78,62 +82,180 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
     private static object? cachedPluginInstance;
     private static volatile bool serviceProbeStuck;
 
-    // 给设置页看的状态
-    private string status = "等待扫描";
-    private string lastHit = "无";
+    // 给设置页看的状态：键 + 参数 + 是否异常，界面上再拼成一句话
+    private string statusKey = "StatusIdle";
+    private object[] statusArgs = Array.Empty<object>();
+    private bool statusBad;
+    private string lastHitKey = "LastHitNone";
+    private object[] lastHitArgs = Array.Empty<object>();
     private string chain = "-";
     private string roots = "-";
 
+    private string StatusText => string.Format(OmniLoc.Get(this, statusKey), statusArgs);
+
+    private string LastHitText => string.Format(OmniLoc.Get(this, lastHitKey), lastHitArgs);
+
+    private void SetStatus(string key, bool bad = false, params object[] args)
+    {
+        statusKey = key;
+        statusArgs = args;
+        statusBad = bad;
+    }
+
+    private void SetLastHit(string key, params object[] args)
+    {
+        lastHitKey = key;
+        lastHitArgs = args;
+    }
+
     public override ModuleInfo Info { get; } = new()
     {
-        Title = "国服频道私聊守卫",
-        Description = "监听 Omni 国服频道私聊，正文命中指定内容后自动登出游戏，也可以只提醒。",
         Category = ModuleCategory.Automation,
         Author = "LKami9",
         SupportUrls = [],
     };
 
+    public override ModuleLocalization Localization { get; } = ModuleLocalization.Create(
+        new Dictionary<string, string>
+        {
+            ["Title"] = "国服频道私聊守卫",
+            ["Description"] = "监听 Omni 国服频道私聊，正文命中指定内容后自动登出游戏，也可以只提醒。",
+
+            // 状态栏
+            ["StatusIdle"] = "等待扫描",
+            ["StatusStarting"] = "已启用，正在定位国服频道",
+            ["StatusStopped"] = "已停用",
+            ["StatusScanError"] = "扫描异常：{0}",
+            ["StatusTypeMissing"] = "未找到国服频道类型：Omni 版本过旧，或频道功能未加载",
+            ["StatusTypeFound"] = "已认出类型（{0}），等待客户端创建",
+            ["StatusClientFound"] = "已定位客户端，正在订阅",
+            ["StatusEventMissing"] = "未找到私聊事件：Omni 版本可能已变更",
+            ["StatusSignatureInvalid"] = "私聊事件签名异常，已停止监听",
+            ["StatusHandlerMissing"] = "内部处理器缺失，已停止监听",
+            ["StatusListening"] = "已连接，正在监听私聊",
+            ["StatusSubscribeFailed"] = "订阅私聊事件失败：{0}",
+            ["StatusLogoutNow"] = "命中关键词，正在登出",
+            ["StatusLogoutDelay"] = "命中关键词，{0} ms 后登出",
+            ["StatusLogoutViaDalamud"] = "已通过 Dalamud 命令表登出",
+            ["StatusLogoutViaOmen"] = "已通过 OmenTools 通道发出 /logout",
+            ["StatusLogoutFailed"] = "两条登出通道都失败：{0}",
+            ["StatusRescanQueued"] = "已排队重新扫描（后台进行，不会卡帧）",
+            ["StatusSettingsReset"] = "设置已重置",
+
+            // 最近命中的私聊
+            ["LastWhisper"] = "最近私聊：{0}",
+            ["LastHitNone"] = "无",
+            ["LastHitWhisper"] = "{0} {1}：{2}",
+            ["LastHitKeywordsEmpty"] = "关键词为空，规则不会命中",
+            ["LastHitSelfHit"] = "自检：样例「{0}」命中",
+            ["LastHitSelfMiss"] = "自检：样例「{0}」未命中，检查匹配方式",
+            ["UnknownSender"] = "未知发送者",
+            ["MatchedNotifyOnly"] = "命中关键词（仅提醒）：{0}",
+
+            // 设置页
+            ["Rescan"] = "重新扫描",
+            ["Mounted"] = "已挂载",
+            ["KeywordsLabel"] = "关键词（每行一条，忽略大小写）",
+            ["MatchMode"] = "匹配方式",
+            ["ModeContains"] = "包含",
+            ["ModeExact"] = "完全相等",
+            ["ModeWildcard"] = "通配符 (* ?)",
+            ["SenderFilter"] = "发送者过滤",
+            ["SenderFilterHint"] = "发送者过滤：显示名 / 服务器 / 化名编号，逗号分隔；留空不限。",
+            ["EnableLogout"] = "命中后自动登出",
+            ["LogoutDelay"] = "登出延迟（毫秒）",
+            ["Cooldown"] = "触发冷却（秒）",
+            ["AnnounceInChat"] = "动作前在聊天框提示",
+            ["MatchGameTell"] = "同时检测游戏内 /tell 私聊（备用）",
+            ["ValidateKeywords"] = "校验关键词规则",
+            ["TestLogout"] = "发送 /logout 测试",
+
+            // 诊断区
+            ["Diagnostics"] = "诊断",
+            ["DiagnosticChain"] = "定位链：{0}",
+            ["DiagnosticRoots"] = "三路根：{0}",
+            ["DiagnosticScans"] = "扫描次数：{0}",
+            ["DiagnosticScanRunning"] = "（进行中）",
+            ["DiagnosticLastTrigger"] = "最近触发：{0}",
+            ["None"] = "无",
+
+            // 聊天框通知
+            ["AnnounceLogoutNow"] = "命中关键词，正在登出游戏",
+            ["AnnounceLogoutDelay"] = "命中关键词，{0} ms 后登出游戏",
+        });
+
     public override bool HasSettings => true;
 
     // #region 1. 生命周期
 
-    protected override void OnEnable()
+    protected override void OnStart(FeatureLifetime activation)
     {
-        HookUpdate();
-        HookGameChat();
-        nextScanUtc = DateTime.MinValue;
-        status = "已启用，正在定位国服频道";
+        // 每次启用都是新的 FeatureLifetime，本次启用的状态必须从头开始
+        ResetRuntimeState();
+
+        HookUpdate(activation);
+        HookGameChat(activation);
+
+        SetStatus("StatusStarting");
         Log("已启用");
     }
 
-    protected override void OnDisable()
+    protected override void OnStop()
     {
-        Detach();
         UnhookGameChat();
         UnhookUpdate();
+
+        ResetRuntimeState();
+
+        SetStatus("StatusStopped");
+        Log("已停用");
+    }
+
+    protected override void OnDestroy() => Detach();
+
+    /// <summary>清空本次启用遗留的一切：队列、扫描标志、反射句柄、界面文字。</summary>
+    private void ResetRuntimeState()
+    {
+        Detach();
 
         while (incoming.TryDequeue(out _))
         {
         }
 
+        nextScanUtc = DateTime.MinValue;
+        logoutAtUtc = DateTime.MinValue;
+        lastTriggerUtc = DateTime.MinValue;
         logoutQueued = false;
+        scanRunning = false;
         scanResultReady = false;
-        scanResultClient = null;
         scanAttempts = 0;
-        status = "已停用";
-        Log("已停用");
+        scanResultClient = null;
+        scanResultStatusKey = "StatusIdle";
+        scanResultStatusArgs = Array.Empty<object>();
+        scanResultStatusBad = false;
+        scanResultChain = "-";
+        scanResultRoots = "-";
+        chain = "-";
+        roots = "-";
+        SetLastHit("LastHitNone");
+        SetStatus("StatusIdle");
     }
 
-    protected override void OnDispose() => Detach();
-
-    private void HookUpdate()
+    private void HookUpdate(FeatureLifetime? activation)
     {
-        if (updateHooked || DalamudServices.Framework is null)
+        if (updateHooked)
         {
             return;
         }
 
-        DalamudServices.Framework.Update += OnUpdate;
+        var framework = DalamudServices.Framework;
+        if (framework is null)
+        {
+            return;
+        }
+
+        activation?.OnStopping(() => framework.Update -= OnUpdate);
+        framework.Update += OnUpdate;
         updateHooked = true;
     }
 
@@ -156,7 +278,7 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         updateHooked = false;
     }
 
-    private void HookGameChat()
+    private void HookGameChat(FeatureLifetime? activation)
     {
         if (chatHooked)
         {
@@ -165,7 +287,14 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
 
         try
         {
-            DalamudServices.ChatGUI.ChatMessage += OnGameChat;
+            var chat = DalamudServices.ChatGUI;
+            if (chat is null)
+            {
+                return;
+            }
+
+            activation?.OnStopping(() => chat.ChatMessage -= OnGameChat);
+            chat.ChatMessage += OnGameChat;
             chatHooked = true;
         }
         catch (Exception ex)
@@ -228,7 +357,7 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         }
 
         scanResultReady = false;
-        status = scanResultStatus;
+        SetStatus(scanResultStatusKey, scanResultStatusBad, scanResultStatusArgs);
         chain = scanResultChain;
         roots = scanResultRoots;
 
@@ -261,7 +390,7 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
             }
             catch (Exception ex)
             {
-                Publish(null, "扫描异常：" + ex.GetType().Name, "-", ex.Message);
+                Publish(null, "StatusScanError", true, "-", ex.Message, ex.GetType().Name);
                 Log(ex);
             }
             finally
@@ -279,7 +408,7 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         var clientTypes = FindClientTypes();
         if (clientTypes.Count == 0)
         {
-            Publish(null, "未找到国服频道类型：Omni 版本过旧，或频道功能未加载", "-", "类型搜索无结果");
+            Publish(null, "StatusTypeMissing", true, "-", "类型搜索无结果");
             return;
         }
 
@@ -288,17 +417,25 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         var instance = FindClientInstance(clientTypes, includeStatic, out var note, out var description);
         if (instance is null)
         {
-            Publish(null, "已认出类型（" + typeNote + "），等待客户端创建", description, note);
+            Publish(null, "StatusTypeFound", false, description, note, typeNote);
             return;
         }
 
-        Publish(instance, "已定位客户端，正在订阅", description, note);
+        Publish(instance, "StatusClientFound", false, description, note);
     }
 
-    private void Publish(object? instance, string newStatus, string newChain, string newRoots)
+    private void Publish(
+        object? instance,
+        string newStatusKey,
+        bool bad,
+        string newChain,
+        string newRoots,
+        params object[] args)
     {
         scanResultClient = instance;
-        scanResultStatus = newStatus;
+        scanResultStatusKey = newStatusKey;
+        scanResultStatusBad = bad;
+        scanResultStatusArgs = args;
         scanResultChain = newChain;
         scanResultRoots = newRoots;
         scanResultReady = true;
@@ -654,10 +791,10 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         }
     }
 
-    /// <summary>宿主挂在 ModuleBase 上的内部回调，其 Target 通常就是模块管理器。</summary>
+    /// <summary>宿主挂在模块基类上的内部回调，其 Target 通常就是模块管理器。</summary>
     private IEnumerable<object> HostRoots()
     {
-        foreach (var field in typeof(ModuleBase).GetFields(BindingFlags.Instance | BindingFlags.NonPublic))
+        foreach (var field in typeof(OmniModuleBase).GetFields(BindingFlags.Instance | BindingFlags.NonPublic))
         {
             object? value;
             try
@@ -739,14 +876,14 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
             var evt = clientType.GetEvent("WhisperReceived", BindingFlags.Instance | BindingFlags.Public);
             if (evt?.EventHandlerType is null)
             {
-                status = "未找到私聊事件：Omni 版本可能已变更";
+                SetStatus("StatusEventMissing", true);
                 return;
             }
 
             var arguments = evt.EventHandlerType.GetGenericArguments();
             if (arguments.Length != 1)
             {
-                status = "私聊事件签名异常，已停止监听";
+                SetStatus("StatusSignatureInvalid", true);
                 return;
             }
 
@@ -762,19 +899,19 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
                 BindingFlags.Instance | BindingFlags.NonPublic);
             if (method is null)
             {
-                status = "内部处理器缺失，已停止监听";
+                SetStatus("StatusHandlerMissing", true);
                 return;
             }
 
             clientHandler = Delegate.CreateDelegate(evt.EventHandlerType, this, method.MakeGenericMethod(payloadType));
             evt.AddEventHandler(instance, clientHandler);
             clientEvent = evt;
-            status = "已连接，正在监听私聊";
+            SetStatus("StatusListening");
             Log($"已连接 {clientType.Name}，订阅 {evt.Name}");
         }
         catch (Exception ex)
         {
-            status = "订阅私聊事件失败：" + ex.GetType().Name;
+            SetStatus("StatusSubscribeFailed", true, ex.GetType().Name);
             Log(ex);
         }
     }
@@ -865,7 +1002,11 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
     {
         while (incoming.TryDequeue(out var whisper))
         {
-            lastHit = $"{DateTime.Now:HH:mm:ss} {whisper.Describe()}：{Shorten(whisper.Text, 60)}";
+            SetLastHit(
+                "LastHitWhisper",
+                DateTime.Now.ToString("HH:mm:ss"),
+                whisper.Describe(OmniLoc.Get(this, "UnknownSender")),
+                Shorten(whisper.Text, 60));
             Log($"私聊 {whisper.Describe()}：{Shorten(whisper.Text, 120)}");
 
             if (!SenderAllowed(whisper) || !TextMatched(whisper.Text))
@@ -881,8 +1022,9 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
     {
         if (!config.EnableLogout)
         {
-            status = "命中关键词（仅提醒）：" + Shorten(whisper.Text, 40);
-            Announce("[频道守卫] 命中关键词（仅提醒）：" + Shorten(whisper.Text, 40));
+            var shortText = Shorten(whisper.Text, 40);
+            SetStatus("MatchedNotifyOnly", false, shortText);
+            Announce(string.Format(OmniLoc.Get(this, "MatchedNotifyOnly"), shortText));
             Log("仅提醒模式，不登出");
             return;
         }
@@ -898,13 +1040,20 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         var delay = Math.Clamp(config.LogoutDelayMs, 0, 30000);
         logoutQueued = true;
         logoutAtUtc = now.AddMilliseconds(delay);
-        status = delay <= 0 ? "命中关键词，正在登出" : $"命中关键词，{delay} ms 后登出";
+        if (delay <= 0)
+        {
+            SetStatus("StatusLogoutNow");
+        }
+        else
+        {
+            SetStatus("StatusLogoutDelay", false, delay);
+        }
 
         if (config.AnnounceInChat)
         {
             Announce(delay <= 0
-                         ? "[频道守卫] 命中关键词，正在登出游戏"
-                         : $"[频道守卫] 命中关键词，{delay} ms 后登出游戏");
+                         ? OmniLoc.Get(this, "AnnounceLogoutNow")
+                         : string.Format(OmniLoc.Get(this, "AnnounceLogoutDelay"), delay));
         }
 
         Log($"命中关键词，{delay} ms 后登出");
@@ -932,19 +1081,19 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
 
         if (viaDalamud)
         {
-            status = "已通过 Dalamud 命令表登出";
+            SetStatus("StatusLogoutViaDalamud");
             Log("登出：CommandManager 返回 true");
             return;
         }
 
         if (TrySendCommandViaOmenTools("/logout", out var why))
         {
-            status = "已通过 OmenTools 通道发出 /logout";
+            SetStatus("StatusLogoutViaOmen");
             Log("登出：OmenTools.ChatManager.SendCommand 已执行");
             return;
         }
 
-        status = "两条登出通道都失败：" + why;
+        SetStatus("StatusLogoutFailed", true, why);
         Log("登出失败：" + why);
     }
 
@@ -1029,7 +1178,7 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
     {
         try
         {
-            DalamudServices.ChatGUI.Print(text, LogTag);
+            DalamudServices.ChatGUI.Print(LogTag + " " + text, LogTag);
         }
         catch (Exception ex)
         {
@@ -1140,29 +1289,37 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
     public override bool DrawSettings()
     {
         // 设置页打开时补一次钩子（模块可能在其他页被启用）
-        HookUpdate();
+        if (!updateHooked && IsEnabled)
+        {
+            HookUpdate(Activation);
+        }
 
         var changed = false;
 
-        ImGui.TextWrapped(status);
-        ImGui.TextWrapped("最近私聊：" + lastHit);
+        var statusColor = statusBad
+                              ? new Vector4(0.95f, 0.45f, 0.45f, 1f)
+                              : new Vector4(0.6f, 0.85f, 0.65f, 1f);
+        ImGui.PushStyleColor(ImGuiCol.Text, statusColor);
+        ImGui.TextWrapped(StatusText);
+        ImGui.PopStyleColor();
+        ImGui.TextWrapped(string.Format(OmniLoc.Get(this, "LastWhisper"), LastHitText));
 
-        if (ImGui.Button("重新扫描"))
+        if (ImGui.Button(OmniLoc.Get(this, "Rescan")))
         {
             scanAttempts = 0;
             nextScanUtc = DateTime.MinValue;
-            status = "已排队重新扫描（后台进行，不会卡帧）";
+            SetStatus("StatusRescanQueued");
         }
 
         if (client is not null)
         {
             ImGui.SameLine();
-            ImGui.TextUnformatted("已挂载");
+            ImGui.TextUnformatted(OmniLoc.Get(this, "Mounted"));
         }
 
         ImGui.Separator();
 
-        ImGui.TextUnformatted("关键词（每行一条，忽略大小写）");
+        ImGui.TextUnformatted(OmniLoc.Get(this, "KeywordsLabel"));
         var keywords = config.Keywords ?? string.Empty;
         if (ImGui.InputTextMultiline("##cn-guard-keywords", ref keywords, 8192, new Vector2(-1f, 96f)))
         {
@@ -1171,77 +1328,89 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
         }
 
         var mode = Math.Clamp(config.MatchMode, 0, 2);
-        if (ImGui.Combo("匹配方式", ref mode, ModeNames, ModeNames.Length))
+        var modeLabels = ModeLabels();
+        if (ImGui.Combo(OmniLoc.Get(this, "MatchMode"), ref mode, modeLabels, modeLabels.Length))
         {
             config.MatchMode = mode;
             changed = true;
         }
 
         var sender = config.SenderFilter ?? string.Empty;
-        if (ImGui.InputText("发送者过滤", ref sender, 256))
+        if (ImGui.InputText(OmniLoc.Get(this, "SenderFilter"), ref sender, 256))
         {
             config.SenderFilter = sender;
             changed = true;
         }
 
-        ImGui.TextWrapped("发送者过滤：显示名 / 服务器 / 化名编号，逗号分隔；留空不限。");
+        ImGui.TextWrapped(OmniLoc.Get(this, "SenderFilterHint"));
 
         var logout = config.EnableLogout;
-        if (ImGui.Checkbox("命中后自动登出", ref logout))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "EnableLogout"), ref logout))
         {
             config.EnableLogout = logout;
             changed = true;
         }
 
         var delay = Math.Clamp(config.LogoutDelayMs, 0, 10000);
-        if (ImGui.SliderInt("登出延迟（毫秒）", ref delay, 0, 10000))
+        if (ImGui.SliderInt(OmniLoc.Get(this, "LogoutDelay"), ref delay, 0, 10000))
         {
             config.LogoutDelayMs = delay;
             changed = true;
         }
 
         var cooldown = Math.Clamp(config.CooldownSeconds, 0, 120);
-        if (ImGui.SliderInt("触发冷却（秒）", ref cooldown, 0, 120))
+        if (ImGui.SliderInt(OmniLoc.Get(this, "Cooldown"), ref cooldown, 0, 120))
         {
             config.CooldownSeconds = cooldown;
             changed = true;
         }
 
         var announce = config.AnnounceInChat;
-        if (ImGui.Checkbox("动作前在聊天框提示", ref announce))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AnnounceInChat"), ref announce))
         {
             config.AnnounceInChat = announce;
             changed = true;
         }
 
         var tell = config.MatchGameTell;
-        if (ImGui.Checkbox("同时检测游戏内 /tell 私聊（备用）", ref tell))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "MatchGameTell"), ref tell))
         {
             config.MatchGameTell = tell;
             changed = true;
         }
 
-        if (ImGui.Button("校验关键词规则"))
+        if (ImGui.Button(OmniLoc.Get(this, "ValidateKeywords")))
         {
             var first = FirstKeyword();
-            lastHit = first.Length == 0
-                           ? "关键词为空，规则不会命中"
-                           : TextMatched(first)
-                               ? $"自检：样例「{first}」命中"
-                               : $"自检：样例「{first}」未命中，检查匹配方式";
+            if (first.Length == 0)
+            {
+                SetLastHit("LastHitKeywordsEmpty");
+            }
+            else
+            {
+                SetLastHit(TextMatched(first) ? "LastHitSelfHit" : "LastHitSelfMiss", first);
+            }
         }
 
-        if (ImGui.Button("发送 /logout 测试"))
+        if (ImGui.Button(OmniLoc.Get(this, "TestLogout")))
         {
             DoLogout();
         }
 
-        if (ImGui.CollapsingHeader("诊断"))
+        if (ImGui.CollapsingHeader(OmniLoc.Get(this, "Diagnostics")))
         {
-            ImGui.TextWrapped("定位链：" + chain);
-            ImGui.TextWrapped("三路根：" + roots);
-            ImGui.TextWrapped("扫描次数：" + scanAttempts + (scanRunning ? "（进行中）" : string.Empty));
-            ImGui.TextWrapped("最近触发：" + (lastTriggerUtc == DateTime.MinValue ? "无" : lastTriggerUtc.ToLocalTime().ToString("HH:mm:ss")));
+            ImGui.TextWrapped(string.Format(OmniLoc.Get(this, "DiagnosticChain"), chain));
+            ImGui.TextWrapped(string.Format(OmniLoc.Get(this, "DiagnosticRoots"), roots));
+
+            var scanText = scanRunning
+                               ? scanAttempts + OmniLoc.Get(this, "DiagnosticScanRunning")
+                               : scanAttempts.ToString();
+            ImGui.TextWrapped(string.Format(OmniLoc.Get(this, "DiagnosticScans"), scanText));
+
+            var lastTrigger = lastTriggerUtc == DateTime.MinValue
+                                  ? OmniLoc.Get(this, "None")
+                                  : lastTriggerUtc.ToLocalTime().ToString("HH:mm:ss");
+            ImGui.TextWrapped(string.Format(OmniLoc.Get(this, "DiagnosticLastTrigger"), lastTrigger));
         }
 
         return changed;
@@ -1249,10 +1418,31 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
 
     public override bool ResetSettings()
     {
-        config = new LKami9ChannelWhisperGuardConfig();
-        lastHit = "无";
-        status = "设置已重置";
+        // 原地逐字段重置：宿主持有 config 的引用，换掉对象会让设置存不上。
+        config.Keywords = string.Empty;
+        config.MatchMode = 0;
+        config.SenderFilter = string.Empty;
+        config.EnableLogout = true;
+        config.LogoutDelayMs = 0;
+        config.CooldownSeconds = 10;
+        config.AnnounceInChat = true;
+        config.MatchGameTell = false;
+
+        SetLastHit("LastHitNone");
+        SetStatus("StatusSettingsReset");
         return true;
+    }
+
+    /// <summary>匹配方式的显示名，按 MatchMode 的下标取本地化文案。</summary>
+    private string[] ModeLabels()
+    {
+        var labels = new string[ModeKeys.Length];
+        for (var i = 0; i < ModeKeys.Length; i++)
+        {
+            labels[i] = OmniLoc.Get(this, ModeKeys[i]);
+        }
+
+        return labels;
     }
 
     // #region 6. 工具
@@ -1333,9 +1523,13 @@ public sealed class LKami9ChannelWhisperGuard : ModuleBase
 
         public bool GameTell;
 
-        public string Describe()
+        /// <summary>日志用：空白发送者显示为固定的中文占位。</summary>
+        public string Describe() => Describe("未知发送者");
+
+        /// <summary>界面用：空白发送者的占位由调用方从本地化表取。</summary>
+        public string Describe(string unknownSender)
         {
-            var name = SenderName.Length == 0 ? "未知发送者" : SenderName;
+            var name = SenderName.Length == 0 ? unknownSender : SenderName;
             var world = SenderWorld.Length == 0 ? string.Empty : "@" + SenderWorld;
             var alias = SenderAlias == 0 ? string.Empty : "#" + SenderAlias;
             return (GameTell ? "[tell] " : string.Empty) + name + world + alias;

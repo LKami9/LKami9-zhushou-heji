@@ -13,6 +13,7 @@ using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 
 using Lumina.Excel.Sheets;
 
+using OmniToolbox.Commands;
 using OmniToolbox.Common.Module.Abstractions;
 using OmniToolbox.Common.Module.Enums;
 using OmniToolbox.Common.Module.Models;
@@ -41,7 +42,8 @@ namespace LKami9.FolkloreBooks;
 /// 接口（全部公开，不写内存）：
 ///   InventoryManager / AgentInventoryContext.UseItem / UnlockState.IsItemUnlocked
 /// </summary>
-public sealed class LKami9FolkloreBooks : ModuleBase
+[ModuleApiVersion(1)]
+public sealed class LKami9FolkloreBooks : OmniModuleBase
 {
     // ItemAction 触发的 Action 行号：4107 = 使用传承录，2136 = 使用秘籍
     private const uint FolkloreActionRowId     = 4107;
@@ -65,23 +67,86 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
     public override ModuleInfo Info { get; } = new()
     {
-        Title       = "LKami9秘录助手",
-        Description = "独立窗口 + /L9ML 短命令：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口，支持自动使用，材料名可点击复制。",
-        Category    = ModuleCategory.Item,
-        Author      = "LKami9",
-        Commands    =
+        Category = ModuleCategory.Item,
+        Author   = "LKami9",
+        Commands =
         [
-            new("打开窗口",         "/L9ML"),
-            new("重新检测",         "/L9ML scan"),
-            new("打开 / 关闭窗口",   "/L9ML window"),
-            new("关闭窗口",         "/L9ML close"),
-            new("重新检测（旧入口）", "/omni LKami9FolkloreBooks scan"),
+            new("CmdOpen",         OmniCommandCatalog.FormatModule(nameof(LKami9FolkloreBooks), string.Empty)),
+            new("CmdScan",         OmniCommandCatalog.FormatModule(nameof(LKami9FolkloreBooks), "scan")),
+            new("CmdToggleWindow", OmniCommandCatalog.FormatModule(nameof(LKami9FolkloreBooks), "window")),
+            new("CmdClose",        OmniCommandCatalog.FormatModule(nameof(LKami9FolkloreBooks), "close")),
         ],
     };
 
+    public override ModuleLocalization Localization { get; } = ModuleLocalization.Create(
+        new Dictionary<string, string>
+        {
+            ["Title"]       = "LKami9秘录助手",
+            ["Description"] = "独立窗口 + /L9ML 短命令：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口，支持自动使用，材料名可点击复制。",
+
+            ["CmdOpen"]          = "打开窗口",
+            ["CmdScan"]          = "重新检测",
+            ["CmdToggleWindow"]  = "打开 / 关闭窗口",
+            ["CmdClose"]         = "关闭窗口",
+            ["ShortCommandHelp"] = "LKami9 秘录助手：/L9ML [scan|window|close]",
+
+            ["WindowTitle"]  = "LKami9 秘录助手",
+            ["SettingsHint"] = "主界面在独立窗口中（/L9ML 打开），配色与窗口样式跟随 Omni 本体主题。",
+
+            ["OpenWindow"]   = "打开窗口",
+            ["CloseWindow"]  = "关闭窗口",
+            ["DetectNow"]    = "立即检测",
+            ["DetectButton"] = "检测",
+            ["SearchHint"]   = "搜索书名",
+            ["ShowUsed"]     = "显示已使用",
+
+            ["AutoUseFolklore"]      = "自动使用传承录",
+            ["AutoUseRecipe"]        = "自动使用秘籍",
+            ["AutoUseFolkloreShort"] = "自动·传承录",
+            ["AutoUseRecipeShort"]   = "自动·秘籍",
+            ["GapLabel"]             = "每本之间的间隔 (毫秒)",
+            ["DockToOmni"]           = "贴靠 Omni 主窗口（拖动标题栏可解除）",
+
+            ["GroupFolklore"] = "传承录（采集）",
+            ["GroupRecipe"]   = "秘籍（生产）",
+            ["GroupHeader"]   = "{0}（未用 {1}）",
+            ["NoMatch"]       = "无匹配的书。",
+            ["GroupAllUsed"]  = "都已使用。",
+            ["UsedDivider"]   = "—— 已使用 ——",
+
+            ["Held"]      = "◀ 已持有",
+            ["Use"]       = "使用",
+            ["UseFailed"] = "使用失败：书不在背包、正在使用另一本，或当前状态不允许。",
+
+            ["SummaryHeader"] = "汇总：还需要兑换的材料",
+            ["SummaryEmpty"]  = "暂时没有需要兑换的书。",
+            ["ColMaterial"]   = "材料",
+            ["ColRequired"]   = "需要",
+            ["ColHeld"]       = "持有",
+            ["ColMissing"]    = "还差",
+            ["OtherInBag"]    = "（另有 {0} 本已在背包里，未计入）",
+            ["OtherHoldings"] = "其他持有：{0}",
+
+            ["CostText"]    = "需 {0}",
+            ["Copied"]      = "已复制：{0}",
+            ["ClickToCopy"] = "点击复制：{0}",
+
+            ["StatusStarting"]           = "已启用，正在检测…",
+            ["StatusNotScanned"]         = "尚未检测。",
+            ["StatusScanDone"]           = "传承录 已用 {0}/{1} · 秘籍 已用 {2}/{3}",
+            ["StatusScanFailed"]         = "检测失败：{0}",
+            ["StatusAutoIdle"]           = "没有可自动使用的书（背包里没有未使用的书，或已全部跳过）。",
+            ["StatusUseSkipped"]         = "已跳过 {0}（等待解锁超时），下次检测后重试。",
+            ["StatusUsing"]              = "正在使用：{0}",
+            ["StatusUsedOne"]            = "已使用：{0}（还剩 {1} 本）",
+            ["StatusAllUsed"]            = "全部书籍都已使用。",
+            ["StatusShortCommandFailed"] = "/L9ML 注册失败：找不到命令服务。",
+        });
+
     public override bool HasSettings => true;
 
-    // 宿主按“以 Config 结尾的成员”绑定已保存的配置；不能是 readonly，宿主需要给它赋值
+    // 宿主按成员名 config 绑定已保存的配置；不能是 readonly，宿主需要给它赋值。
+    // 属性名 / 类型 / 默认值保持不变，否则已发布用户的 JSON 会丢。
     private LKami9FolkloreBooksConfig config = new();
 
     private ICommandManager shortCommandManager;
@@ -114,7 +179,10 @@ public sealed class LKami9FolkloreBooks : ModuleBase
     private readonly Dictionary<uint, (InventoryType Bag, uint Slot)> bagIndex = [];
 
     private bool built;
-    private string status = "尚未检测。";
+    // 状态文字：键 + 参数 + 是否异常（SPEC 第 8 节），渲染时再取本地化文案
+    private string statusKey    = "StatusNotScanned";
+    private object[] statusArgs = [];
+    private bool statusBad;
     private string search = string.Empty;
 
     private string? copiedText;
@@ -148,16 +216,62 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
     #region 生命周期
 
-    protected override void OnEnable()
+    protected override void OnStart(FeatureLifetime activation)
     {
         this.MigrateConfig();
 
-        DalamudServices.PluginInterface.UiBuilder.Draw += this.DrawWindow;
-        DalamudServices.Framework.Update                += this.OnFrameworkUpdate;
+        var uiBuilder = DalamudServices.PluginInterface.UiBuilder;
+        activation.OnStopping(() => uiBuilder.Draw -= this.DrawWindow);
+        uiBuilder.Draw += this.DrawWindow;
 
+        var framework = DalamudServices.Framework;
+        activation.OnStopping(() => framework.Update -= this.OnFrameworkUpdate);
+        framework.Update += this.OnFrameworkUpdate;
+
+        // 短命令：注册在 OnStart，注销交给 activation.OnStopping
+        activation.OnStopping(this.UnregisterShortCommand);
         this.RegisterShortCommand();
-        this.status = "已启用，正在检测…";
+
+        this.ResetSessionState();
+
+        this.SetStatus("StatusStarting");
         this.Scan();
+    }
+
+    protected override void OnStop() => this.ResetSessionState();
+
+    /// <summary>
+    /// 每次启用都会拿到新的 FeatureLifetime，所以本次启用的 pending / 计数 / 标志位在这里归零；
+    /// 目录与成本表是可复用的缓存（catalog / costMap），不随启用次数清空。
+    /// </summary>
+    private void ResetSessionState()
+    {
+        this.pendingItemId     = null;
+        this.pendingRetries    = 0;
+        this.pendingSinceUtc   = DateTime.MinValue;
+        this.nextAutoUseUtc    = DateTime.MinValue;
+        this.nextBagRefreshUtc = DateTime.MinValue;
+        this.autoIdleNoted     = false;
+        this.skippedItems.Clear();
+
+        // 服务可能随插件重载变化，重新解析
+        this.condition         = null;
+        this.conditionResolved = false;
+    }
+
+    /// <summary>失败态状态文字的颜色（原版没有判色，这里只给异常态上色）。</summary>
+    private static readonly System.Numerics.Vector4 StatusErrorColor = new(0.95f, 0.45f, 0.45f, 1f);
+
+    private string StatusText =>
+        this.statusArgs.Length == 0
+            ? OmniLoc.Get(this, this.statusKey)
+            : string.Format(OmniLoc.Get(this, this.statusKey), this.statusArgs);
+
+    private void SetStatus(string key, bool bad = false, params object[] args)
+    {
+        this.statusKey  = key;
+        this.statusArgs = args ?? [];
+        this.statusBad  = bad;
     }
 
     /// <summary>
@@ -171,14 +285,6 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
         this.config.ShowUsed      = false;
         this.config.ConfigVersion = 1;
-    }
-
-    protected override void OnDisable()
-    {
-        this.pendingItemId = null;
-        this.UnregisterShortCommand();
-        DalamudServices.PluginInterface.UiBuilder.Draw -= this.DrawWindow;
-        DalamudServices.Framework.Update                -= this.OnFrameworkUpdate;
     }
 
     public override bool ResetSettings()
@@ -202,7 +308,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
                 DalamudServices.PluginInterface.GetService(typeof(ICommandManager)) as ICommandManager;
             if (this.shortCommandManager == null)
             {
-                this.status = "/L9ML 注册失败：找不到命令服务。";
+                this.SetStatus("StatusShortCommandFailed", true);
                 return;
             }
 
@@ -210,7 +316,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
                 ShortCommand,
                 new CommandInfo(this.OnShortCommand)
                 {
-                    HelpMessage = "LKami9 秘录助手：/L9ML [scan|window|close]",
+                    HelpMessage = OmniLoc.Get(this, "ShortCommandHelp"),
                 });
         }
         catch (Exception ex)
@@ -380,7 +486,9 @@ public sealed class LKami9FolkloreBooks : ModuleBase
                 if (!this.costMap.TryGetValue(book.ItemId, out var costs) || costs.Count == 0)
                     continue;
 
-                book.CostText = "需 " + string.Join(" + ", costs.Select(c => $"{c.Name} ×{c.Count}"));
+                book.CostText = string.Format(
+                    OmniLoc.Get(this, "CostText"),
+                    string.Join(" + ", costs.Select(c => $"{c.Name} ×{c.Count}")));
                 book.CostCopy = string.Join("、", costs.Select(c => $"{c.Name} ×{c.Count}"));
             }
 
@@ -434,13 +542,13 @@ public sealed class LKami9FolkloreBooks : ModuleBase
             var usedRecipe   = this.rows.Count(r => !r.Book.IsFolklore && r.Used);
 
             this.built = true;
-            this.status = $"传承录 已用 {usedFolklore}/{folklore} · 秘籍 已用 {usedRecipe}/{recipe}";
+            this.SetStatus("StatusScanDone", false, usedFolklore, folklore, usedRecipe, recipe);
             DalamudServices.PluginLog.Information(
                 $"[LKami9秘录助手] 检测完成：传承录 {usedFolklore}/{folklore}，秘籍 {usedRecipe}/{recipe}");
         }
         catch (Exception ex)
         {
-            this.status = "检测失败：" + ex.Message;
+            this.SetStatus("StatusScanFailed", true, ex.Message);
             DalamudServices.PluginLog.Error(ex, "[LKami9秘录助手] 检测失败");
         }
     }
@@ -692,7 +800,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         if (!this.autoIdleNoted)
         {
             this.autoIdleNoted = true;
-            this.status = "没有可自动使用的书（背包里没有未使用的书，或已全部跳过）。";
+            this.SetStatus("StatusAutoIdle");
         }
     }
 
@@ -772,7 +880,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
             this.skippedItems.Add(pendingId);
             this.pendingItemId  = null;
             this.nextAutoUseUtc = DateTime.UtcNow.AddMilliseconds(500);
-            this.status = $"已跳过 {name}（等待解锁超时），下次检测后重试。";
+            this.SetStatus("StatusUseSkipped", true, name);
         }
     }
 
@@ -837,7 +945,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         this.pendingSinceUtc = DateTime.UtcNow;
         this.pendingRetries  = 0;
         this.nextAutoUseUtc  = DateTime.UtcNow.AddMilliseconds(this.GapMs);
-        this.status          = $"正在使用：{row.Book.Name}";
+        this.SetStatus("StatusUsing", false, row.Book.Name);
         return true;
     }
 
@@ -851,9 +959,10 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         this.Regroup();
 
         var remaining = this.rows.Count(r => !r.Used);
-        this.status = remaining == 0
-            ? "全部书籍都已使用。"
-            : $"已使用：{row.Book.Name}（还剩 {remaining} 本）";
+        if (remaining == 0)
+            this.SetStatus("StatusAllUsed");
+        else
+            this.SetStatus("StatusUsedOne", false, row.Book.Name, remaining);
     }
 
     private bool IsUnlocked(uint itemId)
@@ -877,26 +986,26 @@ public sealed class LKami9FolkloreBooks : ModuleBase
     {
         var changed = false;
 
-        ImGui.TextUnformatted("LKami9秘录助手");
-        ImGui.TextDisabled("主界面在独立窗口中（/L9ML 打开），配色与窗口样式跟随 Omni 本体主题。");
+        ImGui.TextUnformatted(OmniLoc.Get(this, "Title"));
+        ImGui.TextDisabled(OmniLoc.Get(this, "SettingsHint"));
 
         ImGui.Spacing();
 
-        if (ImGui.Button(this.config.WindowOpen ? "关闭窗口" : "打开窗口"))
+        if (ImGui.Button(OmniLoc.Get(this, this.config.WindowOpen ? "CloseWindow" : "OpenWindow")))
         {
             this.ToggleWindow(!this.config.WindowOpen);
             changed = true;
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("立即检测"))
+        if (ImGui.Button(OmniLoc.Get(this, "DetectNow")))
         {
             this.skippedItems.Clear();
             this.Scan();
         }
 
         var autoFolklore = this.config.AutoUseFolklore;
-        if (ImGui.Checkbox("自动使用传承录", ref autoFolklore))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AutoUseFolklore"), ref autoFolklore))
         {
             this.config.AutoUseFolklore = autoFolklore;
             this.autoIdleNoted = false;
@@ -904,7 +1013,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         }
 
         var autoRecipe = this.config.AutoUseSecretRecipe;
-        if (ImGui.Checkbox("自动使用秘籍", ref autoRecipe))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AutoUseRecipe"), ref autoRecipe))
         {
             this.config.AutoUseSecretRecipe = autoRecipe;
             this.autoIdleNoted = false;
@@ -913,21 +1022,21 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
         var gap = this.config.BookGapMs;
         ImGui.SetNextItemWidth(200 * OmniTheme.Scale(1f));
-        if (ImGui.SliderInt("每本之间的间隔 (毫秒)", ref gap, 50, 1_500))
+        if (ImGui.SliderInt(OmniLoc.Get(this, "GapLabel"), ref gap, 50, 1_500))
         {
             this.config.BookGapMs = gap;
             changed = true;
         }
 
         var dock = this.config.DockToOmni;
-        if (ImGui.Checkbox("贴靠 Omni 主窗口（拖动标题栏可解除）", ref dock))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "DockToOmni"), ref dock))
         {
             this.config.DockToOmni = dock;
             changed = true;
         }
 
         ImGui.Spacing();
-        ImGui.TextDisabled(this.status);
+        ImGui.TextDisabled(this.StatusText);
 
         return changed;
     }
@@ -1072,7 +1181,8 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         using var style = new OmniStyleScope();
         PushOmniStyle(style);
 
-        this.omniFont ??= OmniFonts.GetUIFont();
+        // 玩家 UI 字体：直接用 Dalamud 的插件默认字体句柄（原 OmniFonts 辅助类型在宿主里不存在）
+        this.omniFont ??= TreeToolKit.Fonts.GetUIFont();
         IDisposable fontScope = this.omniFont is { Available: true } ? this.omniFont.Push() : null;
 
         try
@@ -1095,7 +1205,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
                 var chrome = OmniWindowChrome.Draw(
                     framePos, frameSize, this.collapsed,
-                    "LKami9 秘录助手", CollapseId, CloseId, true);
+                    OmniLoc.Get(this, "WindowTitle"), CollapseId, CloseId, true);
 
                 if (this.config.DockToOmni)
                 {
@@ -1174,14 +1284,14 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
         // 工具行：搜索 + 检测 + 显示已使用
         var sText = this.search;
-        if (OmniControls.InputTextWithHint("###mlsearch", "搜索书名", ref sText, 120, OmniTheme.Scale(200f)))
+        if (OmniControls.InputTextWithHint("###mlsearch", OmniLoc.Get(this, "SearchHint"), ref sText, 120, OmniTheme.Scale(200f)))
         {
             this.search = sText;
             this.RebuildViews();
         }
 
         ImGui.SameLine();
-        if (OmniControls.SmallButton("检测", false))
+        if (OmniControls.SmallButton(OmniLoc.Get(this, "DetectButton"), false))
         {
             this.skippedItems.Clear();
             this.Scan();
@@ -1189,14 +1299,14 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
         ImGui.SameLine();
         var showUsed = this.config.ShowUsed;
-        if (OmniControls.Checkbox("显示已使用", ref showUsed))
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "ShowUsed"), ref showUsed))
         {
             this.config.ShowUsed = showUsed;
         }
 
         // 自动使用快捷开关
         var autoFolklore = this.config.AutoUseFolklore;
-        if (OmniControls.Checkbox("自动·传承录", ref autoFolklore))
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "AutoUseFolkloreShort"), ref autoFolklore))
         {
             this.config.AutoUseFolklore = autoFolklore;
             this.autoIdleNoted = false;
@@ -1204,19 +1314,19 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
         ImGui.SameLine();
         var autoRecipe = this.config.AutoUseSecretRecipe;
-        if (OmniControls.Checkbox("自动·秘籍", ref autoRecipe))
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "AutoUseRecipeShort"), ref autoRecipe))
         {
             this.config.AutoUseSecretRecipe = autoRecipe;
             this.autoIdleNoted = false;
         }
 
         ImGui.Spacing();
-        ImGui.TextColored(cText, this.status);
+        ImGui.TextColored(this.statusBad ? StatusErrorColor : cText, this.StatusText);
 
         if (this.copiedText is { } copied && (ImGui.GetTime() - this.copiedAt) < 2.5)
         {
             ImGui.SameLine();
-            ImGui.TextColored(tokens.Success, $"已复制：{copied}");
+            ImGui.TextColored(tokens.Success, string.Format(OmniLoc.Get(this, "Copied"), copied));
         }
 
         DrawThemedRule(tokens.Border);
@@ -1225,11 +1335,11 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         this.DrawSummary(tokens, cText);
 
         ImGui.Spacing();
-        this.DrawBookGroup("###mlFolklore", "传承录（采集）",
+        this.DrawBookGroup("###mlFolklore", OmniLoc.Get(this, "GroupFolklore"),
             this.folkloreUnusedView, this.folkloreUsedView, tokens, cText);
 
         ImGui.Spacing();
-        this.DrawBookGroup("###mlRecipe", "秘籍（生产）",
+        this.DrawBookGroup("###mlRecipe", OmniLoc.Get(this, "GroupRecipe"),
             this.recipeUnusedView, this.recipeUsedView, tokens, cText);
 
         ImGui.Unindent(pad);
@@ -1239,13 +1349,15 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         List<BookRow> unused, List<BookRow> used,
         ThemeTokens tokens, System.Numerics.Vector4 cText)
     {
-        if (!ImGui.CollapsingHeader($"{title}（未用 {unused.Count}）{id}", ImGuiTreeNodeFlags.DefaultOpen))
+        if (!ImGui.CollapsingHeader(
+                string.Format(OmniLoc.Get(this, "GroupHeader"), title, unused.Count) + id,
+                ImGuiTreeNodeFlags.DefaultOpen))
             return;
 
         ImGui.Indent();
 
         if (unused.Count == 0)
-            ImGui.TextDisabled(this.search.Length > 0 ? "无匹配的书。" : "都已使用。");
+            ImGui.TextDisabled(OmniLoc.Get(this, this.search.Length > 0 ? "NoMatch" : "GroupAllUsed"));
 
         foreach (var row in unused)
             this.DrawBookRow(row, tokens, cText);
@@ -1253,7 +1365,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         if (this.config.ShowUsed && used.Count > 0)
         {
             ImGui.Spacing();
-            ImGui.TextColored(tokens.Success, "—— 已使用 ——");
+            ImGui.TextColored(tokens.Success, OmniLoc.Get(this, "UsedDivider"));
             ImGui.TextWrapped(string.Join("、", used.Select(r => r.Book.Name)));
         }
 
@@ -1281,12 +1393,12 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         if (row.InBag)
         {
             ImGui.SameLine();
-            ImGui.TextColored(tokens.Success, "◀ 已持有");
+            ImGui.TextColored(tokens.Success, OmniLoc.Get(this, "Held"));
             ImGui.SameLine();
-            if (OmniControls.SmallButton("使用", false))
+            if (OmniControls.SmallButton(OmniLoc.Get(this, "Use"), false))
             {
                 if (!this.TryUseItem(row.Book.ItemId))
-                    this.status = "使用失败：书不在背包、正在使用另一本，或当前状态不允许。";
+                    this.SetStatus("UseFailed", true);
             }
             return;
         }
@@ -1301,14 +1413,16 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
     private void DrawSummary(ThemeTokens tokens, System.Numerics.Vector4 cText)
     {
-        if (!ImGui.CollapsingHeader("汇总：还需要兑换的材料###mlSummary", ImGuiTreeNodeFlags.DefaultOpen))
+        if (!ImGui.CollapsingHeader(
+                OmniLoc.Get(this, "SummaryHeader") + "###mlSummary",
+                ImGuiTreeNodeFlags.DefaultOpen))
             return;
 
         if (this.needs.Count == 0)
         {
             ImGui.TextDisabled(this.rows.Count > 0 && this.rows.All(r => r.Used)
-                ? "全部书籍都已使用。"
-                : "暂时没有需要兑换的书。");
+                ? OmniLoc.Get(this, "StatusAllUsed")
+                : OmniLoc.Get(this, "SummaryEmpty"));
         }
         else
         {
@@ -1316,10 +1430,10 @@ public sealed class LKami9FolkloreBooks : ModuleBase
 
             if (table.Success)
             {
-                ImGui.TableSetupColumn("材料", ImGuiTableColumnFlags.WidthFixed, 170 * OmniTheme.Scale(1f));
-                ImGui.TableSetupColumn("需要", ImGuiTableColumnFlags.WidthFixed, 78 * OmniTheme.Scale(1f));
-                ImGui.TableSetupColumn("持有", ImGuiTableColumnFlags.WidthFixed, 78 * OmniTheme.Scale(1f));
-                ImGui.TableSetupColumn("还差", ImGuiTableColumnFlags.WidthFixed, 78 * OmniTheme.Scale(1f));
+                ImGui.TableSetupColumn(OmniLoc.Get(this, "ColMaterial"), ImGuiTableColumnFlags.WidthFixed, 170 * OmniTheme.Scale(1f));
+                ImGui.TableSetupColumn(OmniLoc.Get(this, "ColRequired"), ImGuiTableColumnFlags.WidthFixed, 78 * OmniTheme.Scale(1f));
+                ImGui.TableSetupColumn(OmniLoc.Get(this, "ColHeld"), ImGuiTableColumnFlags.WidthFixed, 78 * OmniTheme.Scale(1f));
+                ImGui.TableSetupColumn(OmniLoc.Get(this, "ColMissing"), ImGuiTableColumnFlags.WidthFixed, 78 * OmniTheme.Scale(1f));
                 ImGui.TableHeadersRow();
 
                 foreach (var need in this.needs)
@@ -1343,10 +1457,12 @@ public sealed class LKami9FolkloreBooks : ModuleBase
         }
 
         if (this.alreadyInBag > 0)
-            ImGui.TextDisabled($"（另有 {this.alreadyInBag} 本已在背包里，未计入）");
+            ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "OtherInBag"), this.alreadyInBag));
 
         if (this.otherCurrencies.Count > 0)
-            ImGui.TextDisabled("其他持有：" + string.Join("   ", this.otherCurrencies.Select(h => $"{h.Name} ×{h.Count}")));
+            ImGui.TextDisabled(string.Format(
+                OmniLoc.Get(this, "OtherHoldings"),
+                string.Join("   ", this.otherCurrencies.Select(h => $"{h.Name} ×{h.Count}"))));
     }
 
     private void ClickToCopy(string? text)
@@ -1355,7 +1471,7 @@ public sealed class LKami9FolkloreBooks : ModuleBase
             return;
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("点击复制：" + text);
+            ImGui.SetTooltip(string.Format(OmniLoc.Get(this, "ClickToCopy"), text));
 
         if (!ImGui.IsItemClicked())
             return;

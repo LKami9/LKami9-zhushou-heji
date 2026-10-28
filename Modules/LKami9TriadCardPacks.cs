@@ -22,6 +22,7 @@ using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
 
+using OmniToolbox.Commands;
 using OmniToolbox.Common.Module.Abstractions;
 using OmniToolbox.Common.Module.Enums;
 using OmniToolbox.Common.Module.Models;
@@ -37,24 +38,81 @@ namespace LKami9.TriadCardPacks;
 /// 短命令：/L9KH（重新检测），保留 /omni LKami9TriadCardPacks scan 旧入口。
 /// 颜色跟随 Omni 主题令牌；目录构建与检测失败不缓存半成品，按周期自动重试。
 /// </summary>
-public sealed class LKami9TriadCardPacks : ModuleBase
+[ModuleApiVersion(1)]
+public sealed class LKami9TriadCardPacks : OmniModuleBase
 {
+    private const string ShortCommand = "/L9KH";
+
     public override ModuleInfo Info { get; } = new()
     {
-        Title       = "LKami9幻卡包助手",
-        Description = "列出各幻卡包内含的幻卡与持有情况，可自动使用背包中未持有的幻卡、自动开幻卡包；短命令 /L9KH 一键重检，悬停弹出卡包内容提示，颜色跟随 Omni 主题。",
-        Category    = ModuleCategory.Item,
-        Author      = "LKami9",
-        Commands    =
+        Category = ModuleCategory.Item,
+        Author   = "LKami9",
+        Commands =
         [
-            new("重新检测幻卡包与幻卡", "/L9KH"),
-            new("重新检测（旧入口）",     "/omni LKami9TriadCardPacks scan"),
+            new("CmdScan", ShortCommand),
+            new("CmdScanLegacy", OmniCommandCatalog.FormatModule(nameof(LKami9TriadCardPacks), "scan")),
         ],
     };
 
-    public override bool HasSettings => true;
+    public override ModuleLocalization Localization { get; } = ModuleLocalization.Create(
+        new Dictionary<string, string>
+        {
+            ["Title"]              = "LKami9幻卡包助手",
+            ["Description"]        = "列出各幻卡包内含的幻卡与持有情况，可自动使用背包中未持有的幻卡、自动开幻卡包；短命令 /L9KH 一键重检，悬停弹出卡包内容提示，颜色跟随 Omni 主题。",
+            ["CmdScan"]            = "重新检测幻卡包与幻卡",
+            ["CmdScanLegacy"]      = "重新检测（旧入口）",
+            ["ShortHelp"]          = "LKami9 幻卡包助手：/L9KH 重新检测",
 
-    private const string ShortCommand = "/L9KH";
+            ["StatusIdle"]         = "尚未检测。",
+            ["StatusEnabled"]      = "已启用，正在检测…",
+            ["StatusScanFailed"]   = "检测失败：{0}",
+            ["StatusSummary"]      = "卡包 {0} 种　·　内含幻卡已持有 {1}/{2}　·　背包中卡包 {3} 个（其中还有缺卡的可开 {4} 种）",
+            ["StatusOpeningPack"]  = "正在打开卡包（背包剩余 {0}）…",
+            ["StatusUsingCard"]    = "正在使用幻卡…",
+
+            ["HoverUninitialized"] = "未初始化",
+            ["HoverInitFailed"]    = "初始化失败：{0}",
+            ["HoverReady"]         = "已就绪",
+            ["HoverReadyFallback"] = "已就绪（提示框兜底模式）",
+
+            ["DetectNow"]          = "立即检测",
+            ["Copied"]             = "已复制：{0}",
+            ["AutoUseCards"]       = "自动使用未持有的幻卡",
+            ["AutoOpenPacks"]      = "自动开卡包",
+            ["ShowOwned"]          = "显示已持有",
+            ["OnlyIncomplete"]     = "只开还有缺卡的卡包",
+            ["IntervalMs"]         = "每个之间的间隔 (毫秒)",
+            ["HoverInfo"]          = "悬停幻卡包 / 幻卡时在游戏里弹出内容提示",
+            ["HoverShowOwned"]     = "提示里显示已持有",
+            ["HoverAnchor"]        = "提示位置",
+            ["HoverAnchorFollow"]  = "跟随鼠标",
+            ["HoverAnchorTip"]     = "贴在物品提示框右侧",
+            ["HoverOffsetX"]       = "左右微调",
+            ["HoverOffsetY"]       = "上下微调",
+            ["HoverStatus"]        = "提示状态：{0}",
+            ["ExpandAll"]          = "全部展开",
+            ["CollapseAll"]        = "全部收起",
+            ["BagSummary"]         = "背包中未持有的幻卡 {0} 张　·　卡包 {1} 个",
+
+            ["SummaryHeader"]      = "汇总：幻卡包收集进度 {0}/{1}",
+            ["SummaryPackMissing"] = "{0}：还缺 {1} 张",
+            ["SummaryPackInBag"]   = "（背包里还有 {0} 个）",
+            ["SummaryPackNotInBag"] = "（背包里没有）",
+            ["AllCollected"]       = "所有卡包内的幻卡都已收集齐全。",
+
+            ["PackHeader"]         = "{0}　{1}/{2}{3}",
+            ["BagCount"]           = "背包 ×{0}",
+            ["PackItemId"]         = "卡包道具 ID：{0}",
+            ["Owned"]              = "已持有",
+            ["Missing"]            = "未持有",
+            ["ClickToCopy"]        = "点击复制：{0}",
+
+            ["PackCollected"]      = "已收集 {0}/{1}",
+            ["CardNotInPacks"]     = "这张幻卡不在已知的卡包内。",
+            ["CardMayComeFrom"]    = "可能出自这些卡包：",
+        });
+
+    public override bool HasSettings => true;
 
     private ICommandManager? shortCommandManager;
     private bool shortCommandRegistered;
@@ -110,7 +168,20 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
     private int bagCardCount;
     private int bagPackCount;
-    private string status = "尚未检测。";
+
+    // 状态文字只存键 + 参数 + 是否异常，实际文字走 Localization
+    private string statusKey = "StatusIdle";
+    private object[] statusArgs = Array.Empty<object>();
+    private bool statusBad;
+
+    private string StatusText => string.Format(OmniLoc.Get(this, this.statusKey), this.statusArgs);
+
+    private void SetStatus(string key, bool bad = false, params object[] args)
+    {
+        this.statusKey  = key;
+        this.statusArgs = args;
+        this.statusBad  = bad;
+    }
 
     private string? copiedText;
     private double copiedAt;
@@ -125,9 +196,18 @@ public sealed class LKami9TriadCardPacks : ModuleBase
     // 悬停提示（游戏内物品提示框旁边）
     private IGameGui? gameGui;
     private bool hoverHooked;
-    private string hoverStatus = "未初始化";
+    private string hoverStatusKey = "HoverUninitialized";
+    private object[] hoverStatusArgs = Array.Empty<object>();
     private IntPtr itemDetailAddon;
     private string? itemDetailName;
+
+    private string HoverStatusText => string.Format(OmniLoc.Get(this, this.hoverStatusKey), this.hoverStatusArgs);
+
+    private void SetHoverStatus(string key, params object[] args)
+    {
+        this.hoverStatusKey  = key;
+        this.hoverStatusArgs = args;
+    }
 
     // 自动使用 / 自动开包（待确认机制）
     private uint pendingItemId;
@@ -141,27 +221,46 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
     #region 生命周期
 
-    protected override void OnEnable()
+    protected override void OnStart(FeatureLifetime activation)
     {
-        DalamudServices.Framework.Update += this.OnFrameworkUpdate;
-        this.EnsureHoverSupport();
-        this.RegisterShortCommand();
-        this.status = "已启用，正在检测…";
+        // 每次启用都是新的 FeatureLifetime，本次启用的状态在这里重置
+        this.pendingItemId       = 0;
+        this.pendingInitialCount = 0;
+        this.pendingAttempts     = 0;
+        this.lastAttemptItemId   = 0;
+        this.forcePackOpen       = null;
+        this.copiedText          = null;
+        this.nextActionUtc       = DateTime.MinValue;
+        this.nextScanUtc         = DateTime.MinValue;
+        this.nextBagRefreshUtc   = DateTime.MinValue;
+
+        var framework = DalamudServices.Framework;
+        activation.OnStopping(() => framework.Update -= this.OnFrameworkUpdate);
+        framework.Update += this.OnFrameworkUpdate;
+
+        this.EnsureHoverSupport(activation);
+        this.RegisterShortCommand(activation);
+
+        this.SetStatus("StatusEnabled");
         this.Scan();
     }
 
-    protected override void OnDisable()
+    protected override void OnStop()
     {
-        DalamudServices.Framework.Update -= this.OnFrameworkUpdate;
-        this.ReleaseHoverSupport();
-        this.pendingItemId = 0;
-        this.UnregisterShortCommand();
+        // 事件解绑由 activation.OnStopping 负责，这里只收尾本次启用的运行状态
+        this.pendingItemId       = 0;
+        this.pendingInitialCount = 0;
+        this.pendingAttempts     = 0;
+        this.forcePackOpen       = null;
     }
 
-    protected override void OnDispose() => this.ReleaseHoverSupport();
+    protected override void OnDestroy() => this.ReleaseHoverSupport();
 
-    private void RegisterShortCommand()
+    private void RegisterShortCommand(FeatureLifetime activation)
     {
+        if (this.shortCommandRegistered)
+            return;
+
         try
         {
             this.shortCommandManager =
@@ -174,7 +273,10 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
             this.shortCommandRegistered = this.shortCommandManager.AddHandler(
                 ShortCommand,
-                new CommandInfo(this.OnShortCommand) { HelpMessage = "LKami9 幻卡包助手：/L9KH 重新检测" });
+                new CommandInfo(this.OnShortCommand) { HelpMessage = OmniLoc.Get(this, "ShortHelp") });
+
+            if (this.shortCommandRegistered)
+                activation.OnStopping(this.UnregisterShortCommand);
         }
         catch (Exception ex)
         {
@@ -197,6 +299,17 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
     public override bool ResetSettings()
     {
+        var changed = !this.config.ShowOwned
+                   || this.config.AutoUseCards
+                   || this.config.AutoOpenPacks
+                   || !this.config.OnlyIncomplete
+                   || this.config.IntervalMs != 100
+                   || !this.config.HoverInfo
+                   || this.config.HoverAnchor != 0
+                   || this.config.HoverOffsetX != 0
+                   || this.config.HoverOffsetY != 0
+                   || !this.config.HoverShowOwned;
+
         this.config.ShowOwned          = true;
         this.config.AutoUseCards       = false;
         this.config.AutoOpenPacks      = false;
@@ -207,7 +320,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         this.config.HoverOffsetX       = 0;
         this.config.HoverOffsetY       = 0;
         this.config.HoverShowOwned     = true;
-        return true;
+        return changed;
     }
 
     public override bool TryHandleCommand(string arguments)
@@ -338,7 +451,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         catch (Exception ex)
         {
             // 每 2 秒会重试，这里只更新状态，不让异常冒泡到框架更新循环
-            this.status = "检测失败：" + ex.Message;
+            this.SetStatus("StatusScanFailed", true, ex.Message);
             DalamudServices.PluginLog.Error(ex, "[LKami9幻卡包助手] 检测失败");
         }
     }
@@ -398,8 +511,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
         if (this.pendingItemId == 0)
         {
-            this.status =
-                $"卡包 {packs} 种　·　内含幻卡已持有 {owned}/{total}　·　背包中卡包 {this.bagPackCount} 个（其中还有缺卡的可开 {canOpen} 种）";
+            this.SetStatus("StatusSummary", false, packs, owned, total, this.bagPackCount, canOpen);
         }
     }
 
@@ -595,7 +707,12 @@ public sealed class LKami9TriadCardPacks : ModuleBase
                 this.pendingInitialCount = this.CountInBags(itemId);
                 this.pendingSinceUtc     = DateTime.UtcNow;
                 this.nextActionUtc       = DateTime.UtcNow.AddMilliseconds(this.IntervalMs);
-                this.status              = isPack ? $"正在打开卡包（背包剩余 {this.pendingInitialCount}）…" : "正在使用幻卡…";
+
+                if (isPack)
+                    this.SetStatus("StatusOpeningPack", false, this.pendingInitialCount);
+                else
+                    this.SetStatus("StatusUsingCard");
+
                 return true;
             }
         }
@@ -632,14 +749,20 @@ public sealed class LKami9TriadCardPacks : ModuleBase
             this.RefreshBagCounts();
         }
 
-        ImGui.TextWrapped(this.status);
+        if (this.statusBad)
+            ImGui.PushStyleColor(ImGuiCol.Text, this.MissingVec);
+
+        ImGui.TextWrapped(this.StatusText);
+
+        if (this.statusBad)
+            ImGui.PopStyleColor();
 
         if (this.copiedText is { } copied && (ImGui.GetTime() - this.copiedAt) < 2.5)
-            ImGui.TextColored(this.OwnedVec, $"已复制：{copied}");
+            ImGui.TextColored(this.OwnedVec, string.Format(OmniLoc.Get(this, "Copied"), copied));
 
         ImGui.Spacing();
 
-        if (ImGui.Button("立即检测"))
+        if (ImGui.Button(OmniLoc.Get(this, "DetectNow")))
         {
             this.Scan();
             this.copiedText = null;
@@ -647,7 +770,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
         ImGui.SameLine();
         var autoCards = this.config.AutoUseCards;
-        if (ImGui.Checkbox("自动使用未持有的幻卡", ref autoCards))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AutoUseCards"), ref autoCards))
         {
             this.config.AutoUseCards = autoCards;
             changed = true;
@@ -655,14 +778,14 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
         ImGui.SameLine();
         var autoPacks = this.config.AutoOpenPacks;
-        if (ImGui.Checkbox("自动开卡包", ref autoPacks))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AutoOpenPacks"), ref autoPacks))
         {
             this.config.AutoOpenPacks = autoPacks;
             changed = true;
         }
 
         var showOwned = this.config.ShowOwned;
-        if (ImGui.Checkbox("显示已持有", ref showOwned))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "ShowOwned"), ref showOwned))
         {
             this.config.ShowOwned = showOwned;
             changed = true;
@@ -670,7 +793,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
         ImGui.SameLine();
         var onlyIncomplete = this.config.OnlyIncomplete;
-        if (ImGui.Checkbox("只开还有缺卡的卡包", ref onlyIncomplete))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "OnlyIncomplete"), ref onlyIncomplete))
         {
             this.config.OnlyIncomplete = onlyIncomplete;
             changed = true;
@@ -678,14 +801,14 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
         ImGui.SetNextItemWidth(200 * ImGuiHelpers.GlobalScale);
         var interval = this.config.IntervalMs;
-        if (ImGui.SliderInt("每个之间的间隔 (毫秒)", ref interval, 50, 1_500))
+        if (ImGui.SliderInt(OmniLoc.Get(this, "IntervalMs"), ref interval, 50, 1_500))
         {
             this.config.IntervalMs = interval;
             changed = true;
         }
 
         var hoverInfo = this.config.HoverInfo;
-        if (ImGui.Checkbox("悬停幻卡包 / 幻卡时在游戏里弹出内容提示", ref hoverInfo))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "HoverInfo"), ref hoverInfo))
         {
             this.config.HoverInfo = hoverInfo;
             changed = true;
@@ -695,15 +818,16 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         {
             ImGui.SameLine();
             var hoverShowOwned = this.config.HoverShowOwned;
-            if (ImGui.Checkbox("提示里显示已持有", ref hoverShowOwned))
+            if (ImGui.Checkbox(OmniLoc.Get(this, "HoverShowOwned"), ref hoverShowOwned))
             {
                 this.config.HoverShowOwned = hoverShowOwned;
                 changed = true;
             }
 
             var anchor = this.config.HoverAnchor;
+            var anchorItems = OmniLoc.Get(this, "HoverAnchorFollow") + "\0" + OmniLoc.Get(this, "HoverAnchorTip") + "\0";
             ImGui.SetNextItemWidth(200 * ImGuiHelpers.GlobalScale);
-            if (ImGui.Combo("提示位置", ref anchor, "跟随鼠标\0贴在物品提示框右侧\0", 2))
+            if (ImGui.Combo(OmniLoc.Get(this, "HoverAnchor"), ref anchor, anchorItems, 2))
             {
                 this.config.HoverAnchor = anchor;
                 changed = true;
@@ -711,7 +835,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
             ImGui.SetNextItemWidth(110 * ImGuiHelpers.GlobalScale);
             var offsetX = this.config.HoverOffsetX;
-            if (ImGui.DragInt("左右微调", ref offsetX, 1f, -600, 600))
+            if (ImGui.DragInt(OmniLoc.Get(this, "HoverOffsetX"), ref offsetX, 1f, -600, 600))
             {
                 this.config.HoverOffsetX = offsetX;
                 changed = true;
@@ -720,25 +844,25 @@ public sealed class LKami9TriadCardPacks : ModuleBase
             ImGui.SameLine();
             ImGui.SetNextItemWidth(110 * ImGuiHelpers.GlobalScale);
             var offsetY = this.config.HoverOffsetY;
-            if (ImGui.DragInt("上下微调", ref offsetY, 1f, -600, 600))
+            if (ImGui.DragInt(OmniLoc.Get(this, "HoverOffsetY"), ref offsetY, 1f, -600, 600))
             {
                 this.config.HoverOffsetY = offsetY;
                 changed = true;
             }
 
             ImGui.SameLine();
-            ImGui.TextDisabled($"提示状态：{this.hoverStatus}");
+            ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "HoverStatus"), this.HoverStatusText));
         }
 
-        if (ImGui.Button("全部展开"))
+        if (ImGui.Button(OmniLoc.Get(this, "ExpandAll")))
             this.forcePackOpen = true;
 
         ImGui.SameLine();
-        if (ImGui.Button("全部收起"))
+        if (ImGui.Button(OmniLoc.Get(this, "CollapseAll")))
             this.forcePackOpen = false;
 
         ImGui.SameLine();
-        ImGui.TextDisabled($"背包中未持有的幻卡 {this.bagCardCount} 张　·　卡包 {this.bagPackCount} 个");
+        ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "BagSummary"), this.bagCardCount, this.bagPackCount));
 
         ImGui.Separator();
 
@@ -763,20 +887,23 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         var total = this.rows.Sum(r => r.Cards.Count);
         var owned = this.rows.Sum(r => r.Owned);
 
-        if (!ImGui.CollapsingHeader($"汇总：幻卡包收集进度 {owned}/{total}###lkTriadSummary", ImGuiTreeNodeFlags.DefaultOpen))
+        var summaryHeader = string.Format(OmniLoc.Get(this, "SummaryHeader"), owned, total) + "###lkTriadSummary";
+        if (!ImGui.CollapsingHeader(summaryHeader, ImGuiTreeNodeFlags.DefaultOpen))
             return;
 
         ImGui.Indent();
 
         foreach (var row in this.rows.Where(r => r.Missing > 0).OrderByDescending(r => r.Missing))
         {
-            ImGui.TextUnformatted($"{row.Pack.Name}：还缺 {row.Missing} 张");
+            ImGui.TextUnformatted(string.Format(OmniLoc.Get(this, "SummaryPackMissing"), row.Pack.Name, row.Missing));
             ImGui.SameLine();
-            ImGui.TextDisabled(row.BagCount > 0 ? $"（背包里还有 {row.BagCount} 个）" : "（背包里没有）");
+            ImGui.TextDisabled(row.BagCount > 0
+                                   ? string.Format(OmniLoc.Get(this, "SummaryPackInBag"), row.BagCount)
+                                   : OmniLoc.Get(this, "SummaryPackNotInBag"));
         }
 
         if (this.rows.All(r => r.Missing == 0))
-            ImGui.TextDisabled("所有卡包内的幻卡都已收集齐全。");
+            ImGui.TextDisabled(OmniLoc.Get(this, "AllCollected"));
 
         ImGui.Unindent();
     }
@@ -786,10 +913,13 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         if (this.forcePackOpen is { } force)
             ImGui.SetNextItemOpen(force, ImGuiCond.Always);
 
-        var bagText = row.BagCount > 0 ? $"　背包 ×{row.BagCount}" : string.Empty;
+        var bagText = row.BagCount > 0 ? "　" + string.Format(OmniLoc.Get(this, "BagCount"), row.BagCount) : string.Empty;
         var flag = row.BagCount > 0 && row.Missing > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
 
-        if (!ImGui.CollapsingHeader($"{row.Pack.Name}　{row.Owned}/{row.Cards.Count}{bagText}###lkTriadPack{row.Pack.ItemId}", flag))
+        var packHeader = string.Format(OmniLoc.Get(this, "PackHeader"), row.Pack.Name, row.Owned, row.Cards.Count, bagText)
+                       + $"###lkTriadPack{row.Pack.ItemId}";
+
+        if (!ImGui.CollapsingHeader(packHeader, flag))
             return;
 
         ImGui.Indent();
@@ -797,7 +927,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         this.DrawItemIcon(row.Pack.Icon, 22);
         ImGui.SameLine();
         ImGui.AlignTextToFramePadding();
-        ImGui.TextDisabled($"卡包道具 ID：{row.Pack.ItemId}");
+        ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "PackItemId"), row.Pack.ItemId));
 
         ImGui.Spacing();
 
@@ -831,18 +961,18 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         ImGui.SameLine();
         if (card.Owned)
         {
-            ImGui.TextColored(this.OwnedVec, "已持有");
+            ImGui.TextColored(this.OwnedVec, OmniLoc.Get(this, "Owned"));
         }
         else
         {
-            ImGui.TextColored(this.MissingVec, "未持有");
+            ImGui.TextColored(this.MissingVec, OmniLoc.Get(this, "Missing"));
         }
 
         var bag = card.ItemId == 0 ? 0 : this.bagCounts.GetValueOrDefault(card.ItemId);
         if (bag > 0)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"背包 ×{bag}");
+            ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "BagCount"), bag));
         }
     }
 
@@ -875,7 +1005,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
             return;
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("点击复制：" + text);
+            ImGui.SetTooltip(string.Format(OmniLoc.Get(this, "ClickToCopy"), text));
 
         if (!ImGui.IsItemClicked())
             return;
@@ -889,7 +1019,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
     #region 悬停提示
 
-    private void EnsureHoverSupport()
+    private void EnsureHoverSupport(FeatureLifetime activation)
     {
         if (this.hoverHooked)
             return;
@@ -912,7 +1042,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         }
         catch (Exception ex)
         {
-            this.hoverStatus = "初始化失败：" + ex.Message;
+            this.SetHoverStatus("HoverInitFailed", ex.Message);
             DalamudServices.PluginLog.Error(ex, "[LKami9幻卡包助手] 挂载悬停提示失败");
             return;
         }
@@ -928,7 +1058,8 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         }
 
         this.hoverHooked = true;
-        this.hoverStatus = this.gameGui is null ? "已就绪（提示框兜底模式）" : "已就绪";
+        activation.OnStopping(this.ReleaseHoverSupport);
+        this.SetHoverStatus(this.gameGui is null ? "HoverReadyFallback" : "HoverReady");
     }
 
     private void ReleaseHoverSupport()
@@ -1113,12 +1244,12 @@ public sealed class LKami9TriadCardPacks : ModuleBase
 
         ImGui.TextColored(this.WarnVec, row.Pack.Name);
         ImGui.SameLine();
-        ImGui.TextDisabled($"已收集 {row.Owned}/{row.Cards.Count}");
+        ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "PackCollected"), row.Owned, row.Cards.Count));
 
         if (row.BagCount > 0)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"背包 ×{row.BagCount}");
+            ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "BagCount"), row.BagCount));
         }
 
         ImGui.Separator();
@@ -1151,17 +1282,17 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         }
 
         ImGui.SameLine();
-        ImGui.TextColored(owned ? this.OwnedVec : this.MissingVec, owned ? "已持有" : "未持有");
+        ImGui.TextColored(owned ? this.OwnedVec : this.MissingVec, OmniLoc.Get(this, owned ? "Owned" : "Missing"));
 
         ImGui.Separator();
 
         if (packs.Count == 0)
         {
-            ImGui.TextDisabled("这张幻卡不在已知的卡包内。");
+            ImGui.TextDisabled(OmniLoc.Get(this, "CardNotInPacks"));
             return;
         }
 
-        ImGui.TextDisabled("可能出自这些卡包：");
+        ImGui.TextDisabled(OmniLoc.Get(this, "CardMayComeFrom"));
 
         foreach (var pack in packs)
         {
@@ -1187,7 +1318,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         }
 
         ImGui.SameLine();
-        ImGui.TextColored(card.Owned ? this.OwnedVec : this.MissingVec, card.Owned ? "已持有" : "未持有");
+        ImGui.TextColored(card.Owned ? this.OwnedVec : this.MissingVec, OmniLoc.Get(this, card.Owned ? "Owned" : "Missing"));
 
         if (!showBag || card.ItemId == 0)
             return;
@@ -1196,7 +1327,7 @@ public sealed class LKami9TriadCardPacks : ModuleBase
         if (bag > 0)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"背包 ×{bag}");
+            ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "BagCount"), bag));
         }
     }
 

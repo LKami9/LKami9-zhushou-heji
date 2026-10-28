@@ -15,6 +15,7 @@ using Lumina.Excel.Sheets;
 
 using AchRow = Lumina.Excel.Sheets.Achievement;
 
+using OmniToolbox.Commands;
 using OmniToolbox.Common.Module.Abstractions;
 using OmniToolbox.Common.Module.Enums;
 using OmniToolbox.Common.Module.Models;
@@ -39,23 +40,101 @@ namespace LKami9.TitleHelper;
 ///   UIState.Instance()->TitleController.SendTitleIdUpdate(ushort)
 ///   UIState.Instance()->TitleList.RequestTitleList()
 /// </summary>
-public sealed class LKami9TitleHelper : ModuleBase
+[ModuleApiVersion(1)]
+public sealed class LKami9TitleHelper : OmniModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
-        Title       = "LKami9称号助手",
-        Description = "独立窗口：检索称号、一键佩戴、查看未解锁称号的获取方式。界面与配色跟随 Omni 本体主题。",
-        Category    = ModuleCategory.Interface,
-        Author      = "LKami9",
+        Category = ModuleCategory.Interface,
+        Author   = "LKami9",
         Commands =
         [
-            new("打开 / 关闭窗口", "/L9CHH"),
-            new("按关键词搜索",   "/L9CHH search 关键字"),
-            new("按 ID 佩戴称号", "/L9CHH equip 123"),
-            new("随机佩戴已解锁称号", "/L9CHH random"),
-            new("立即检测已解锁称号", "/L9CHH detect"),
+            new("CmdToggle", OmniCommandCatalog.FormatModule(nameof(LKami9TitleHelper), string.Empty)),
+            new("CmdSearch", OmniCommandCatalog.FormatModule(nameof(LKami9TitleHelper), "search <keyword>")),
+            new("CmdEquip",  OmniCommandCatalog.FormatModule(nameof(LKami9TitleHelper), "equip 123")),
+            new("CmdRandom", OmniCommandCatalog.FormatModule(nameof(LKami9TitleHelper), "random")),
+            new("CmdDetect", OmniCommandCatalog.FormatModule(nameof(LKami9TitleHelper), "detect")),
         ],
     };
+
+    public override ModuleLocalization Localization { get; } = ModuleLocalization.Create(
+        new Dictionary<string, string>
+        {
+            ["Title"]       = "LKami9称号助手",
+            ["Description"] = "独立窗口：检索称号、一键佩戴、查看未解锁称号的获取方式。界面与配色跟随 Omni 本体主题。",
+
+            ["CmdToggle"] = "打开 / 关闭窗口",
+            ["CmdSearch"] = "按关键词搜索",
+            ["CmdEquip"]  = "按 ID 佩戴称号",
+            ["CmdRandom"] = "随机佩戴已解锁称号",
+            ["CmdDetect"] = "立即检测已解锁称号",
+
+            ["WindowTitle"] = "LKami9 称号助手",
+            ["CommandHelp"] = "LKami9 称号助手：/L9CHH [search 关键词|equip ID|random]",
+
+            ["SearchHint"]       = "搜索称号 / 成就 / 分类 / ID",
+            ["AllCategories"]    = "全部分类",
+            ["DetectButton"]     = "检测",
+            ["ClearButton"]      = "清空",
+            ["RandomButton"]     = "随机称号",
+            ["OnlyUnlocked"]     = "仅已解锁",
+            ["OnlyLocked"]       = "仅未解锁",
+            ["OnlyPrefix"]       = "仅前缀",
+            ["OnlySuffix"]       = "仅后缀",
+            ["SortAscending"]    = "正序",
+            ["Summary"]          = "共 {0} 个称号 · 已解锁 {1} · 当前 {2} 条",
+            ["LastEquippedLine"] = "· 上次佩戴：{0}",
+
+            ["EquipMenu"]      = "佩戴",
+            ["WatchRemove"]    = "移出成就监视",
+            ["WatchAdd"]       = "加入成就监视",
+            ["CopyTitleName"]  = "复制称号名",
+            ["Unfavorite"]     = "取消收藏",
+            ["Favorite"]       = "收藏",
+            ["FavoritePin"]    = "收藏并置顶",
+            ["QueryProgress"]  = "查询进度",
+            ["Progress"]       = "进度 {0} / {1}",
+            ["NoAchievement"]  = "（数据表里没有关联成就，可能是特殊来源）",
+            ["Watched"]        = "· 已监视",
+
+            ["PrefixLabel"]             = "前缀",
+            ["SuffixLabel"]             = "后缀",
+            ["TitleLabel"]              = "{0}    ({1} · {2})",
+            ["AchievementLine"]         = "获取：{0}",
+            ["AchievementNamePart"]     = "【{0}】",
+            ["AchievementCategoryPart"] = "   {0}",
+            ["AchievementPointsPart"]   = "   {0} 点",
+
+            ["OpenWindow"]        = "打开窗口",
+            ["CloseWindow"]       = "关闭窗口",
+            ["DetectNow"]         = "立即检测",
+            ["AutoExpandLocked"]  = "默认展开未解锁称号",
+            ["SettingsHint"]      = "主界面在独立窗口中，配色与窗口样式跟随 Omni 本体主题。",
+
+            ["StatusIdle"]                  = "尚未检测。点击「立即检测」读取并保存已解锁称号。",
+            ["StatusCommandServiceMissing"] = "/L9CHH 注册失败：找不到命令服务。",
+            ["StatusSearchDone"]            = "搜索「{0}」，命中 {1} 条。",
+            ["StatusEquipUsage"]            = "用法：/L9CHH equip <称号ID>",
+            ["StatusSheetMissing"]          = "取不到称号 / 成就数据表。",
+            ["StatusBuildFailed"]           = "载入失败：{0}",
+            ["StatusWaitingForPlayer"]      = "等待角色载入后检测称号…",
+            ["StatusUiStateUnavailable"]    = "无法读取称号数据：UIState 不可用。",
+            ["StatusRequestingData"]        = "正在请求称号数据，收到后会自动完成检测…",
+            ["StatusDetectFailed"]          = "检测失败：无法读取称号状态。",
+            ["StatusSnapshotLoadFailed"]    = "读取上次检测数据失败，请重新点击「立即检测」。",
+            ["StatusSnapshotSaveFailed"]    = "检测完成，但保存本地数据失败。",
+            ["StatusWatchRemoved"]          = "已移出成就监视。",
+            ["StatusWatchFull"]             = "成就监视已满（上限 30）。",
+            ["StatusWatchAdded"]            = "已加入成就监视。",
+            ["StatusNoUnlocked"]            = "没有可用的已解锁称号。",
+            ["StatusRandomEquipped"]        = "随机称号：{0}（{1}）",
+            ["StatusNotInGame"]             = "还没进入游戏世界。",
+            ["StatusTitleLocked"]           = "称号 {0} 未解锁，无法佩戴。",
+            ["StatusEquipped"]              = "已佩戴：{0}",
+            ["StatusEquipFailed"]           = "佩戴失败：{0}",
+            ["StatusLoadedSnapshot"]        = "已载入 {0} 个称号 · 上次检测解锁 {1} 个 · {2}",
+            ["StatusLoadedNoSnapshot"]      = "已载入 {0} 个称号 · 尚未检测，请点击「立即检测」。",
+        });
 
     public override bool HasSettings => true;
 
@@ -66,6 +145,9 @@ public sealed class LKami9TitleHelper : ModuleBase
     private const string UnlockSnapshotFileName = "LKami9TitleHelper.unlocked.json";
     private ICommandManager shortCommandManager;
     private bool shortCommandRegistered;
+
+    // 窗口统一字体：宿主 1.1.8.x 由 TreeToolKit.Fonts 提供
+    private Dalamud.Interface.ManagedFontAtlas.IFontHandle omniFont;
 
 
     private LKami9TitleHelperConfig config = new();
@@ -97,7 +179,6 @@ public sealed class LKami9TitleHelper : ModuleBase
     private DateTime nextUnlockDetectionRequest = DateTime.MinValue;
     private DateTimeOffset? unlockSnapshotSavedAt;
 
-    private Dalamud.Interface.ManagedFontAtlas.IFontHandle omniFont;
     private int page = 1;
     private int jumpPage = 1;
     private readonly List<uint> expanded = [];
@@ -105,8 +186,20 @@ public sealed class LKami9TitleHelper : ModuleBase
 
     private bool   built;
     private string search  = string.Empty;
-    private string status  = "尚未检测。点击「立即检测」读取并保存已解锁称号。";
     private string lastEquipped = string.Empty;
+
+    private string   statusKey  = "StatusIdle";
+    private object[] statusArgs = Array.Empty<object>();
+    private bool     statusBad;
+
+    private string StatusText => string.Format(OmniLoc.Get(this, this.statusKey), this.statusArgs);
+
+    private void SetStatus(string key, bool bad = false, params object[] args)
+    {
+        this.statusKey  = key;
+        this.statusArgs = args;
+        this.statusBad  = bad;
+    }
 
     private bool    unlockedOnly;
     private bool    lockedOnly;
@@ -121,25 +214,36 @@ public sealed class LKami9TitleHelper : ModuleBase
 
     #region 生命周期
 
-    protected override void OnEnable()
+    protected override void OnStart(FeatureLifetime activation)
     {
-        DalamudServices.PluginInterface.UiBuilder.Draw += this.DrawWindow;
-        DalamudServices.Framework.Update                += this.OnFrameworkUpdate;
+        var uiBuilder = DalamudServices.PluginInterface.UiBuilder;
+        var framework = DalamudServices.Framework;
+
+        activation.OnStopping(() => uiBuilder.Draw -= this.DrawWindow);
+        uiBuilder.Draw += this.DrawWindow;
+
+        activation.OnStopping(() => framework.Update -= this.OnFrameworkUpdate);
+        framework.Update += this.OnFrameworkUpdate;
+
+        // 每次启用都拿到新的 FeatureLifetime，本次启用的检测状态必须清零
+        this.unlockDetectionPending     = false;
+        this.nextUnlockDetectionCheck   = DateTime.MinValue;
+        this.nextUnlockDetectionRequest = DateTime.MinValue;
 
         this.MigrateConfig();
         this.RefreshFavoriteCache();
+
+        activation.OnStopping(this.UnregisterShortCommand);
         this.RegisterShortCommand();
+
         DalamudServices.PluginLog.Information(
             $"[LKami9TitleHelper] enabled local-manual: windowOpen={this.config.WindowOpen}, shortCommand={this.shortCommandRegistered}");
         if (this.config.WindowOpen) this.EnsureDataReady();
     }
 
-    protected override void OnDisable()
+    protected override void OnStop()
     {
         this.unlockDetectionPending = false;
-        this.UnregisterShortCommand();
-        DalamudServices.PluginInterface.UiBuilder.Draw -= this.DrawWindow;
-        DalamudServices.Framework.Update                -= this.OnFrameworkUpdate;
     }
 
     private void RegisterShortCommand()
@@ -150,7 +254,7 @@ public sealed class LKami9TitleHelper : ModuleBase
                 DalamudServices.PluginInterface.GetService(typeof(ICommandManager)) as ICommandManager;
             if (this.shortCommandManager == null)
             {
-                this.status = "/L9CHH 注册失败：找不到命令服务。";
+                this.SetStatus("StatusCommandServiceMissing", true);
                 return;
             }
 
@@ -158,7 +262,7 @@ public sealed class LKami9TitleHelper : ModuleBase
                 ShortCommand,
                 new CommandInfo(this.OnShortCommand)
                 {
-                    HelpMessage = "LKami9 称号助手：/L9CHH [search 关键词|equip ID|random]",
+                    HelpMessage = OmniLoc.Get(this, "CommandHelp"),
                 });
         }
         catch (Exception ex)
@@ -218,7 +322,7 @@ public sealed class LKami9TitleHelper : ModuleBase
                 this.search = arg;
                 this.Rebuild();
                 this.ToggleWindow(true);
-                this.status = $"搜索「{arg}」，命中 {this.view.Count} 条。";
+                this.SetStatus("StatusSearchDone", false, arg, this.view.Count);
                 return true;
 
             case "random":
@@ -231,7 +335,7 @@ public sealed class LKami9TitleHelper : ModuleBase
                 return true;
 
             case "equip":
-                if (!uint.TryParse(arg, out var id)) { this.status = "用法：/L9CHH equip <称号ID>"; return true; }
+                if (!uint.TryParse(arg, out var id)) { this.SetStatus("StatusEquipUsage", true); return true; }
                 this.Equip(id);
                 return true;
 
@@ -282,7 +386,7 @@ public sealed class LKami9TitleHelper : ModuleBase
         {
             var achievements = DalamudServices.DataManager.GetExcelSheet<AchRow>();
             var titles       = DalamudServices.DataManager.GetExcelSheet<Title>();
-            if (achievements == null || titles == null) { this.status = "取不到称号 / 成就数据表。"; return; }
+            if (achievements == null || titles == null) { this.SetStatus("StatusSheetMissing", true); return; }
 
             var byTitle = new Dictionary<uint, (string Name, string Desc, string Cat, byte Points, uint AchId)>(achievements.Count);
             foreach (var ach in achievements)
@@ -334,7 +438,7 @@ public sealed class LKami9TitleHelper : ModuleBase
         }
         catch (Exception ex)
         {
-            this.status = "载入失败：" + ex.Message;
+            this.SetStatus("StatusBuildFailed", true, ex.Message);
             DalamudServices.PluginLog.Warning(ex, "[LKami9TitleHelper] build failed");
             return;
         }
@@ -354,21 +458,23 @@ public sealed class LKami9TitleHelper : ModuleBase
             $"[LKami9TitleHelper] build complete: titles={this.all.Count}, savedUnlocked={this.unlockedCount}");
     }
 
-    private static void PrepareEntry(TitleEntry e)
+    private void PrepareEntry(TitleEntry e)
     {
-        var kind = e.IsPrefix ? "前缀" : "后缀";
+        var kind = e.IsPrefix ? OmniLoc.Get(this, "PrefixLabel") : OmniLoc.Get(this, "SuffixLabel");
         var id   = e.Id.ToString();
-        var tail = string.Concat("    (", kind, " · ", id, ")");
 
-        e.Label     = string.Concat(e.Name, tail);
+        e.Label     = string.Format(OmniLoc.Get(this, "TitleLabel"), e.Name, kind, id);
         e.SearchKey = string.Concat(e.Name, "\n", e.NameF, "\n", e.AchName, "\n",
             e.AchDesc, "\n", e.AchCat, "\n", id);
 
         if (e.AchName.Length > 0 || e.AchDesc.Length > 0)
         {
-            var line = string.Concat("获取：", e.AchName.Length > 0 ? "【" + e.AchName + "】" : string.Empty);
-            if (e.AchCat.Length > 0) line += "   " + e.AchCat;
-            if (e.AchPoints > 0) line += string.Concat("   ", e.AchPoints.ToString(), " 点");
+            var namePart = e.AchName.Length > 0
+                ? string.Format(OmniLoc.Get(this, "AchievementNamePart"), e.AchName)
+                : string.Empty;
+            var line = string.Format(OmniLoc.Get(this, "AchievementLine"), namePart);
+            if (e.AchCat.Length > 0) line += string.Format(OmniLoc.Get(this, "AchievementCategoryPart"), e.AchCat);
+            if (e.AchPoints > 0) line += string.Format(OmniLoc.Get(this, "AchievementPointsPart"), e.AchPoints);
             e.AchievementLine = line;
         }
     }
@@ -401,14 +507,14 @@ public sealed class LKami9TitleHelper : ModuleBase
         if (!DalamudServices.PlayerState.IsLoaded)
         {
             this.unlockDetectionPending = true;
-            this.status = "等待角色载入后检测称号…";
+            this.SetStatus("StatusWaitingForPlayer");
             return;
         }
 
         var ui = UIState.Instance();
         if (ui == null)
         {
-            this.status = "无法读取称号数据：UIState 不可用。";
+            this.SetStatus("StatusUiStateUnavailable", true);
             return;
         }
 
@@ -417,7 +523,7 @@ public sealed class LKami9TitleHelper : ModuleBase
             this.unlockDetectionPending = true;
             this.nextUnlockDetectionRequest = DateTime.UtcNow.AddSeconds(2);
             try { ui->TitleList.RequestTitleList(); } catch { }
-            this.status = "正在请求称号数据，收到后会自动完成检测…";
+            this.SetStatus("StatusRequestingData");
             return;
         }
 
@@ -429,7 +535,7 @@ public sealed class LKami9TitleHelper : ModuleBase
         this.unlockDetectionPending = false;
         if (!this.ScanUnlockedNow())
         {
-            this.status = "检测失败：无法读取称号状态。";
+            this.SetStatus("StatusDetectFailed", true);
             return;
         }
 
@@ -471,7 +577,7 @@ public sealed class LKami9TitleHelper : ModuleBase
         catch (Exception ex)
         {
             DalamudServices.PluginLog.Warning(ex, "[LKami9TitleHelper] load unlock snapshot failed");
-            this.status = "读取上次检测数据失败，请重新点击「立即检测」。";
+            this.SetStatus("StatusSnapshotLoadFailed", true);
         }
     }
 
@@ -501,7 +607,7 @@ public sealed class LKami9TitleHelper : ModuleBase
         catch (Exception ex)
         {
             DalamudServices.PluginLog.Warning(ex, "[LKami9TitleHelper] save unlock snapshot failed");
-            this.status = "检测完成，但保存本地数据失败。";
+            this.SetStatus("StatusSnapshotSaveFailed", true);
         }
     }
 
@@ -585,19 +691,19 @@ public sealed class LKami9TitleHelper : ModuleBase
         {
             module->RemoveFromWatchlist(id);
             this.watchedCache[id] = false;
-            this.status = "已移出成就监视。";
+            this.SetStatus("StatusWatchRemoved");
             return false;
         }
 
         if (module->IsWatchlistFull())
         {
-            this.status = "成就监视已满（上限 30）。";
+            this.SetStatus("StatusWatchFull", true);
             return false;
         }
 
         module->AddToWatchlist(id);
         this.watchedCache[id] = true;
-        this.status = "已加入成就监视。";
+        this.SetStatus("StatusWatchAdded");
         return true;
     }
 
@@ -617,13 +723,13 @@ public sealed class LKami9TitleHelper : ModuleBase
 
         if (pick == null)
         {
-            this.status = "没有可用的已解锁称号。";
+            this.SetStatus("StatusNoUnlocked", true);
             return;
         }
 
         this.lastRandomId = pick.Id;
         this.Equip(pick.Id);
-        this.status = string.Format("随机称号：{0}（{1}）", pick.Name, pick.Id);
+        this.SetStatus("StatusRandomEquipped", false, pick.Name, pick.Id);
     }
 
     private unsafe void Equip(uint id)
@@ -631,22 +737,22 @@ public sealed class LKami9TitleHelper : ModuleBase
         try
         {
             var ui = UIState.Instance();
-            if (ui == null) { this.status = "还没进入游戏世界。"; return; }
+            if (ui == null) { this.SetStatus("StatusNotInGame", true); return; }
 
             if (!ui->TitleList.IsTitleUnlocked((ushort)id))
             {
-                this.status = $"称号 {id} 未解锁，无法佩戴。";
+                this.SetStatus("StatusTitleLocked", true, id);
                 return;
             }
 
             ui->TitleController.SendTitleIdUpdate((ushort)id);
             this.byId.TryGetValue(id, out var e);
             this.lastEquipped = e != null ? $"{e.Name}（{id}）" : id.ToString();
-            this.status       = "已佩戴：" + this.lastEquipped;
+            this.SetStatus("StatusEquipped", false, this.lastEquipped);
         }
         catch (Exception ex)
         {
-            this.status = "佩戴失败：" + ex.Message;
+            this.SetStatus("StatusEquipFailed", true, ex.Message);
         }
     }
 
@@ -713,7 +819,7 @@ public sealed class LKami9TitleHelper : ModuleBase
 
         if (!DalamudServices.PlayerState.IsLoaded)
         {
-            this.status = "等待角色载入后检测称号…";
+            this.SetStatus("StatusWaitingForPlayer");
             return;
         }
 
@@ -723,7 +829,7 @@ public sealed class LKami9TitleHelper : ModuleBase
             if (ui == null)
             {
                 this.unlockDetectionPending = false;
-                this.status = "检测失败：无法读取称号状态。";
+                this.SetStatus("StatusDetectFailed", true);
                 return;
             }
 
@@ -745,9 +851,11 @@ public sealed class LKami9TitleHelper : ModuleBase
 
     private void UpdateLoadedStatus()
     {
-        this.status = this.unlockSnapshotSavedAt is { } savedAt
-            ? $"已载入 {this.all.Count} 个称号 · 上次检测解锁 {this.unlockedCount} 个 · {savedAt:MM-dd HH:mm:ss}"
-            : $"已载入 {this.all.Count} 个称号 · 尚未检测，请点击「立即检测」。";
+        if (this.unlockSnapshotSavedAt is { } savedAt)
+            this.SetStatus("StatusLoadedSnapshot", false,
+                this.all.Count, this.unlockedCount, savedAt.ToString("MM-dd HH:mm:ss"));
+        else
+            this.SetStatus("StatusLoadedNoSnapshot", false, this.all.Count);
     }
 
     #endregion
@@ -889,15 +997,13 @@ public sealed class LKami9TitleHelper : ModuleBase
 
         var self = ImGuiWindowPtr.Null;
 
-        // Omni 字体 + 配色（含滚动条）：RAII 作用域，Dispose 必定按计数弹回
+        // 配色（含滚动条）：RAII 作用域，Dispose 必定按计数弹回
         using var style = new OmniStyleScope();
         PushOmniStyle(style);
 
-        this.omniFont ??= OmniFonts.GetUIFont();
-        IDisposable fontScope = this.omniFont is { Available: true } ? this.omniFont.Push() : null;
-
-        try
-        {
+        // 宿主 1.1.8.x 把字体入口挪到了 TreeToolKit.Fonts（旧的 OmniFonts 已移除）
+        this.omniFont ??= TreeToolKit.Fonts.GetUIFont();
+        using var fontScope = this.omniFont is { Available: true } ? this.omniFont.Push() : null;
         if (ImGui.Begin(WindowId, ref open,
                 ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse |
                 ImGuiWindowFlags.NoDocking  | ImGuiWindowFlags.NoScrollbar |
@@ -917,7 +1023,7 @@ public sealed class LKami9TitleHelper : ModuleBase
 
             var chrome = OmniWindowChrome.Draw(
                 framePos, frameSize, this.collapsed,
-                "LKami9 称号助手", CollapseId, CloseId, true);
+                OmniLoc.Get(this, "WindowTitle"), CollapseId, CloseId, true);
 
             if (this.config.DockToOmni)
             {
@@ -974,11 +1080,6 @@ public sealed class LKami9TitleHelper : ModuleBase
         }
 
         ImGui.End();
-        }
-        finally
-        {
-            fontScope?.Dispose();
-        }
 
         if (!self.IsNull && this.config.DockToOmni && !omni.IsNull)
             ImGuiP.BringWindowToDisplayBehind(self, omni);
@@ -1084,7 +1185,7 @@ public sealed class LKami9TitleHelper : ModuleBase
 
         // 工具条：搜索 + 分类（Omni 控件）
         var sText = this.search;
-        if (OmniControls.InputTextWithHint("###titlesearch", "搜索称号 / 成就 / 分类 / ID",
+        if (OmniControls.InputTextWithHint("###titlesearch", OmniLoc.Get(this, "SearchHint"),
                 ref sText, 120, OmniTheme.Scale(230f)))
         {
             this.search = sText;
@@ -1093,10 +1194,11 @@ public sealed class LKami9TitleHelper : ModuleBase
         }
 
         ImGui.SameLine();
-        var preview = this.config.CategoryFilter.Length == 0 ? "全部分类" : this.config.CategoryFilter;
+        var allCategories = OmniLoc.Get(this, "AllCategories");
+        var preview = this.config.CategoryFilter.Length == 0 ? allCategories : this.config.CategoryFilter;
         if (OmniControls.BeginCombo("###titlecat", preview, OmniTheme.Scale(150f)))
         {
-            if (OmniControls.RoundedMenuItem("全部分类", true))
+            if (OmniControls.RoundedMenuItem(allCategories, true))
             {
                 this.config.CategoryFilter = string.Empty;
                 this.page = 1;
@@ -1115,11 +1217,11 @@ public sealed class LKami9TitleHelper : ModuleBase
         }
 
         ImGui.SameLine();
-        if (OmniControls.SmallButton("检测", false)) this.RequestUnlockDetection();
+        if (OmniControls.SmallButton(OmniLoc.Get(this, "DetectButton"), false)) this.RequestUnlockDetection();
 
         ImGui.SameLine();
         ImGui.BeginDisabled(this.search.Length == 0 && this.config.CategoryFilter.Length == 0);
-        if (OmniControls.SmallButton("清空", false))
+        if (OmniControls.SmallButton(OmniLoc.Get(this, "ClearButton"), false))
         {
             this.search = string.Empty;
             this.config.CategoryFilter = string.Empty;
@@ -1129,35 +1231,35 @@ public sealed class LKami9TitleHelper : ModuleBase
         ImGui.EndDisabled();
 
         ImGui.SameLine();
-        if (OmniControls.SmallButton("随机称号", false,
+        if (OmniControls.SmallButton(OmniLoc.Get(this, "RandomButton"), false,
                 new System.Numerics.Vector2(OmniTheme.Scale(92f), OmniTheme.Scale(24f))))
             this.EquipRandom();
 
         // 过滤
         ImGui.Spacing();
         var uo = this.unlockedOnly;
-        if (OmniControls.Checkbox("仅已解锁", ref uo)) { this.unlockedOnly = uo; if (uo) this.lockedOnly = false; this.page = 1; this.Rebuild(); }
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "OnlyUnlocked"), ref uo)) { this.unlockedOnly = uo; if (uo) this.lockedOnly = false; this.page = 1; this.Rebuild(); }
         ImGui.SameLine();
         var lo = this.lockedOnly;
-        if (OmniControls.Checkbox("仅未解锁", ref lo)) { this.lockedOnly = lo; if (lo) this.unlockedOnly = false; this.page = 1; this.Rebuild(); }
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "OnlyLocked"), ref lo)) { this.lockedOnly = lo; if (lo) this.unlockedOnly = false; this.page = 1; this.Rebuild(); }
         ImGui.SameLine();
         var po = this.prefixOnly;
-        if (OmniControls.Checkbox("仅前缀", ref po)) { this.prefixOnly = po; if (po) this.suffixOnly = false; this.page = 1; this.Rebuild(); }
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "OnlyPrefix"), ref po)) { this.prefixOnly = po; if (po) this.suffixOnly = false; this.page = 1; this.Rebuild(); }
         ImGui.SameLine();
         var so = this.suffixOnly;
-        if (OmniControls.Checkbox("仅后缀", ref so)) { this.suffixOnly = so; if (so) this.prefixOnly = false; this.page = 1; this.Rebuild(); }
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "OnlySuffix"), ref so)) { this.suffixOnly = so; if (so) this.prefixOnly = false; this.page = 1; this.Rebuild(); }
         ImGui.SameLine();
         var asc = this.config.Ascending;
-        if (OmniControls.Checkbox("正序", ref asc)) { this.config.Ascending = asc; this.Rebuild(); }
+        if (OmniControls.Checkbox(OmniLoc.Get(this, "SortAscending"), ref asc)) { this.config.Ascending = asc; this.Rebuild(); }
 
         // 摘要
         ImGui.Spacing();
         ImGui.TextColored(cText,
-            string.Format("共 {0} 个称号 · 已解锁 {1} · 当前 {2} 条", this.all.Count, this.unlockedCount, this.view.Count));
+            string.Format(OmniLoc.Get(this, "Summary"), this.all.Count, this.unlockedCount, this.view.Count));
         if (this.lastEquipped.Length > 0)
         {
             ImGui.SameLine();
-            ImGui.TextColored(cText, "· 上次佩戴：" + this.lastEquipped);
+            ImGui.TextColored(cText, string.Format(OmniLoc.Get(this, "LastEquippedLine"), this.lastEquipped));
         }
 
         DrawThemedRule(tokens.Border);
@@ -1222,7 +1324,7 @@ public sealed class LKami9TitleHelper : ModuleBase
         this.page     = pageLocal;
         this.jumpPage = jumpLocal;
 
-        ImGui.TextColored(cText, this.status);
+        ImGui.TextColored(cText, this.StatusText);
         ImGui.Unindent(pad);
     }
 
@@ -1290,15 +1392,15 @@ public sealed class LKami9TitleHelper : ModuleBase
             ImGui.Dummy(new System.Numerics.Vector2(0f, OmniTheme.Scale(3f)));
             ImGui.Indent(popupPad);
 
-            if (ok && OmniControls.RoundedMenuItem("佩戴")) this.Equip(e.Id);
+            if (ok && OmniControls.RoundedMenuItem(OmniLoc.Get(this, "EquipMenu"))) this.Equip(e.Id);
             if (e.AchId is > 0 and <= ushort.MaxValue)
             {
                 var watched = IsWatched(e.AchId);
-                if (OmniControls.RoundedMenuItem(watched ? "移出成就监视" : "加入成就监视"))
+                if (OmniControls.RoundedMenuItem(OmniLoc.Get(this, watched ? "WatchRemove" : "WatchAdd")))
                     this.ToggleWatch(e.AchId);
             }
-            if (OmniControls.RoundedMenuItem("复制称号名")) ImGui.SetClipboardText(e.Name);
-            if (OmniControls.RoundedMenuItem(starred ? "取消收藏" : "收藏"))
+            if (OmniControls.RoundedMenuItem(OmniLoc.Get(this, "CopyTitleName"))) ImGui.SetClipboardText(e.Name);
+            if (OmniControls.RoundedMenuItem(OmniLoc.Get(this, starred ? "Unfavorite" : "Favorite")))
                 this.ToggleFavorite(e.Id, starred);
 
             ImGui.Dummy(new System.Numerics.Vector2(0f, OmniTheme.Scale(3f)));
@@ -1307,13 +1409,14 @@ public sealed class LKami9TitleHelper : ModuleBase
         }
 
         ImGui.SameLine();
-        if (OmniControls.FavoriteButton("###fav", starred, starred ? "取消收藏" : "收藏并置顶"))
+        if (OmniControls.FavoriteButton("###fav", starred,
+                OmniLoc.Get(this, starred ? "Unfavorite" : "FavoritePin")))
             this.ToggleFavorite(e.Id, starred);
 
         if (ok)
         {
             ImGui.SameLine();
-            if (OmniControls.SmallButton("佩戴", false,
+            if (OmniControls.SmallButton(OmniLoc.Get(this, "EquipMenu"), false,
                     new System.Numerics.Vector2(btnWidth, MathF.Min(rowHeight, OmniTheme.Scale(22f)))))
                 this.Equip(e.Id);
         }
@@ -1332,25 +1435,25 @@ public sealed class LKami9TitleHelper : ModuleBase
             }
             else
             {
-                ImGui.TextColored(cText, "（数据表里没有关联成就，可能是特殊来源）");
+                ImGui.TextColored(cText, OmniLoc.Get(this, "NoAchievement"));
             }
 
             if (!ok && e.AchId is > 0 and <= ushort.MaxValue)
             {
                 if (this.TryGetProgress(e.AchId, out var cur, out var max))
                 {
-                    ImGui.TextColored(cText, string.Format("进度 {0} / {1}", cur, max));
+                    ImGui.TextColored(cText, string.Format(OmniLoc.Get(this, "Progress"), cur, max));
                     ImGui.SameLine();
                     var frac = max > 0 ? Math.Clamp((float)cur / max, 0f, 1f) : 0f;
                     ImGui.ProgressBar(frac,
                         new System.Numerics.Vector2(OmniTheme.Scale(150f), OmniTheme.Scale(8f)), string.Empty);
                 }
-                else if (OmniControls.SmallButton("查询进度", false))
+                else if (OmniControls.SmallButton(OmniLoc.Get(this, "QueryProgress"), false))
                 {
                     this.RequestProgress(e.AchId);
                 }
 
-                if (this.IsWatched(e.AchId)) { ImGui.SameLine(); ImGui.TextColored(cText, "· 已监视"); }
+                if (this.IsWatched(e.AchId)) { ImGui.SameLine(); ImGui.TextColored(cText, OmniLoc.Get(this, "Watched")); }
             }
 
             ImGui.Unindent(OmniTheme.Scale(26f));
@@ -1367,30 +1470,30 @@ public sealed class LKami9TitleHelper : ModuleBase
 
     public override bool DrawSettings()
     {
-        ImGui.TextUnformatted("LKami9 称号助手");
-        ImGui.TextDisabled("主界面在独立窗口中，配色与窗口样式跟随 Omni 本体主题。");
+        ImGui.TextUnformatted(OmniLoc.Get(this, "WindowTitle"));
+        ImGui.TextDisabled(OmniLoc.Get(this, "SettingsHint"));
 
         var changed = false;
 
         ImGui.Spacing();
-        if (ImGui.Button(this.config.WindowOpen ? "关闭窗口" : "打开窗口"))
+        if (ImGui.Button(OmniLoc.Get(this, this.config.WindowOpen ? "CloseWindow" : "OpenWindow")))
         {
             this.ToggleWindow(!this.config.WindowOpen);
             changed = true;
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("立即检测")) this.RequestUnlockDetection();
+        if (ImGui.Button(OmniLoc.Get(this, "DetectNow"))) this.RequestUnlockDetection();
 
         var autoExpand = this.config.AutoExpandLocked;
-        if (ImGui.Checkbox("默认展开未解锁称号", ref autoExpand))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AutoExpandLocked"), ref autoExpand))
         {
             this.config.AutoExpandLocked = autoExpand;
             changed = true;
         }
 
         ImGui.Spacing();
-        ImGui.TextDisabled(this.status);
+        ImGui.TextDisabled(this.StatusText);
 
         // 按官方规范：只有配置真的变了才返回 true，让宿主保存
         return changed;

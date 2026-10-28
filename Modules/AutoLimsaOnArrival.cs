@@ -1,18 +1,10 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Numerics;
-using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Conditions;
-using Dalamud.Game.Command;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
-using OmniToolbox.Common.Module.Abstractions;
-using OmniToolbox.Common.Module.Enums;
-using OmniToolbox.Common.Module.Models;
-using OmniToolbox.Host;
+using OmniToolbox.Commands;
 
 namespace OmniToolbox.AutoLimsaOnArrival;
 
@@ -20,24 +12,77 @@ namespace OmniToolbox.AutoLimsaOnArrival;
 /// 跨服 / 超域传送落地后，自动把你送到海都（利姆萨·罗敏萨）。
 /// 只做传送，不模拟按键，也不碰移动寻路。
 /// </summary>
-public sealed class AutoLimsaOnArrival : ModuleBase
+[ModuleApiVersion(1)]
+public sealed class AutoLimsaOnArrival : OmniModuleBase
 {
     private const string SlashCommand = "/L9HD";
 
     public override ModuleInfo Info { get; } = new()
     {
-        Title = "LKami9农村人助手",
-        Description = "跨服或超域传送落地后，自动传送到利姆萨·罗敏萨的大水晶。",
         Category = ModuleCategory.Automation,
         Author = "LKami9",
         Commands =
         [
-            new("立即前往海都", "/L9HD GO"),
-            new("重置服务器记录", "/L9HD rset"),
+            new("CmdGo", OmniCommandCatalog.FormatModule(nameof(AutoLimsaOnArrival), "GO")),
+            new("CmdReset", OmniCommandCatalog.FormatModule(nameof(AutoLimsaOnArrival), "rset")),
         ],
     };
 
-    private AutoLimsaConfig config = new();
+    public override ModuleLocalization Localization { get; } = ModuleLocalization.Create(
+        new Dictionary<string, string>
+        {
+            ["Title"] = "LKami9农村人助手",
+            ["Description"] = "跨服或超域传送落地后，自动传送到利姆萨·罗敏萨的大水晶。",
+
+            ["CmdGo"] = "立即前往海都",
+            ["CmdReset"] = "重置服务器记录",
+
+            ["AutoTeleport"] = "落地后自动传送",
+            ["AutoTeleportHint"] = "关掉后只提示，不动手",
+            ["OnlyCrossDataCenter"] = "只在大区变更时触发",
+            ["OnlyCrossDataCenterHint"] = "取消勾选则同大区跨服也触发",
+            ["DelayFormat"] = "%.1f 秒",
+            ["DelayHint"] = "落地后等待",
+            ["RecordedWorld"] = "已记录服务器：{0}",
+            ["CurrentWorld"] = "当前服务器：{0}",
+            ["CurrentTerritory"] = "当前区域：{0}（{1}）",
+            ["NotLoggedIn"] = "当前未登录",
+            ["GoNowButton"] = "立即前往海都",
+            ["ResetRecordButton"] = "重置记录",
+            ["ReloadAetheryteButton"] = "重新识别水晶",
+            ["UnknownWorld"] = "（未记录）",
+            ["UnknownTerritory"] = "（未知）",
+            ["SlashUsage"] = "[L9HD] 用法：/L9HD GO 立即前往海都 ；/L9HD rset 重置服务器记录",
+            ["ShortCommandHelp"] = "GO 立即前往海都；rset 重置服务器记录",
+
+            ["StatusNotStarted"] = "尚未启用",
+            ["StatusIdle"] = "待命中，等待服务器变更",
+            ["StatusStopped"] = "已停用",
+            ["StatusNoClientState"] = "拿不到客户端状态服务，模块无法工作",
+            ["StatusNoClientStateShort"] = "拿不到客户端状态服务",
+            ["StatusAetheryteMissing"] = "找不到海都大水晶，检查游戏语言与数据版本",
+            ["StatusAetheryteMissingGo"] = "找不到海都大水晶，无法传送",
+            ["StatusAetheryteStillMissing"] = "仍然找不到海都大水晶",
+            ["StatusAetheryteFound"] = "已识别海都大水晶（ID {0}）",
+            ["StatusShortCommandTaken"] = "{0} 已被占用，请改用 /omni 命令",
+            ["StatusRecordCleared"] = "已清除服务器记录，下次登录不会触发",
+            ["StatusRecordClearedShort"] = "已清除服务器记录",
+            ["StatusArrived"] = "已到达海都",
+            ["StatusVerifyTimeout"] = "传送后一直没到海都，可能被中断或水晶未解锁",
+            ["StatusWorldRecorded"] = "已记录当前服务器（{0}），下次变更时触发",
+            ["StatusSameDataCenterSkipped"] = "服务器变更为 {0}（同大区），按设置跳过",
+            ["StatusWorldChanged"] = "检测到服务器变更 → {0}，等落地",
+            ["StatusPendingTimeout"] = "等待落地超时，已放弃这次触发",
+            ["StatusBusy"] = "仍在加载，稍后重试",
+            ["StatusTerritoryNotReady"] = "区域还没读到，跳过",
+            ["StatusAlreadyInLimsa"] = "已经站在海都，不用传送",
+            ["StatusAutoTeleportOff"] = "已抵达 {0}，自动传送已关闭",
+            ["StatusTeleportSent"] = "已发出传送请求，等待读条",
+            ["StatusTeleportFailed"] = "传送失败：海都大水晶可能未解锁",
+            ["StatusNotLoggedIn"] = "还没登录角色",
+        });
+
+    private Settings config = new();
 
     private IClientState? clientState;
     private ICondition? condition;
@@ -49,42 +94,62 @@ public sealed class AutoLimsaOnArrival : ModuleBase
     private uint limsaAetheryte;
     private uint lastWorld;
     private bool commandRegistered;
-    private string status = "尚未启用";
+
+    // 状态文字拆成「键 + 参数 + 是否异常」三件套，界面里再拼成当前语言的文案。
+    private string statusKey = "StatusNotStarted";
+    private object[] statusArgs = Array.Empty<object>();
+    private bool statusBad;
 
     public override bool HasSettings => true;
 
-    protected override void OnEnable()
+    private string StatusText => string.Format(OmniLoc.Get(this, statusKey), statusArgs);
+
+    private void SetStatus(string key, bool bad = false, params object[] args)
     {
+        statusKey = key;
+        statusArgs = args;
+        statusBad = bad;
+    }
+
+    protected override void OnStart(FeatureLifetime activation)
+    {
+        // 每次启用都是新的 FeatureLifetime，本次启用的状态一律从头开始。
+        pending = false;
+        pendingSince = default;
+        verifying = false;
+        teleportAt = default;
+        limsaAetheryte = 0;
+        lastWorld = 0;
+        SetStatus("StatusNotStarted");
+
         RegisterSlashCommand();
+        activation.OnStopping(UnregisterSlashCommand);
 
         clientState = DalamudServices.PluginInterface.GetService(typeof(IClientState)) as IClientState;
         condition = DalamudServices.PluginInterface.GetService(typeof(ICondition)) as ICondition;
 
         limsaAetheryte = ResolveLimsaAetheryte();
         lastWorld = LoadLastWorld();
-        pending = false;
-        verifying = false;
 
         if (clientState == null)
         {
-            status = "拿不到客户端状态服务，模块无法工作";
+            SetStatus("StatusNoClientState", true);
             return;
         }
 
-        status = limsaAetheryte == 0
-            ? "找不到海都大水晶，检查游戏语言与数据版本"
-            : "待命中，等待服务器变更";
+        SetStatus(limsaAetheryte == 0 ? "StatusAetheryteMissing" : "StatusIdle", limsaAetheryte == 0);
 
-        DalamudServices.Framework.Update += OnFrameworkUpdate;
+        var framework = DalamudServices.Framework;
+        activation.OnStopping(() => framework.Update -= OnFrameworkUpdate);
+        framework.Update += OnFrameworkUpdate;
     }
 
-    protected override void OnDisable()
+    protected override void OnStop()
     {
-        DalamudServices.Framework.Update -= OnFrameworkUpdate;
-        UnregisterSlashCommand();
         pending = false;
+        pendingSince = default;
         verifying = false;
-        status = "已停用";
+        SetStatus("StatusStopped");
     }
 
     /// <summary>注册独立斜杠命令。/omni 那条路照样能用，这里只是给个更短的入口。</summary>
@@ -100,13 +165,13 @@ public sealed class AutoLimsaOnArrival : ModuleBase
             if (DalamudServices.CommandManager.Commands.ContainsKey(SlashCommand))
             {
                 DalamudServices.PluginLog.Warning($"[AutoLimsa] {SlashCommand} 已被其它插件占用，短命令不可用");
-                status = $"{SlashCommand} 已被占用，请改用 /omni 命令";
+                SetStatus("StatusShortCommandTaken", false, SlashCommand);
                 return;
             }
 
             DalamudServices.CommandManager.AddHandler(SlashCommand, new CommandInfo(OnSlashCommand)
             {
-                HelpMessage = "GO 立即前往海都；rset 重置服务器记录",
+                HelpMessage = OmniLoc.Get(this, "ShortCommandHelp"),
                 ShowInHelp = true,
             });
             commandRegistered = true;
@@ -162,7 +227,7 @@ public sealed class AutoLimsaOnArrival : ModuleBase
 
         if (fromSlash)
         {
-            DalamudServices.ChatGUI.Print("[L9HD] 用法：/L9HD GO 立即前往海都 ；/L9HD rset 重置服务器记录");
+            DalamudServices.ChatGUI.Print(OmniLoc.Get(this, "SlashUsage"));
         }
 
         return false;
@@ -174,93 +239,96 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         SaveLastWorld(0);
         pending = false;
         verifying = false;
-        status = "已清除服务器记录，下次登录不会触发";
+        SetStatus("StatusRecordCleared");
     }
 
     public override bool DrawSettings()
     {
         var dirty = false;
 
-        var bad = status.Contains("失败")
-                  || status.Contains("拿不到")
-                  || status.Contains("找不到")
-                  || status.Contains("未解锁")
-                  || status.Contains("超时");
-        var color = bad
+        var color = statusBad
             ? new Vector4(0.95f, 0.45f, 0.45f, 1f)
             : new Vector4(0.6f, 0.85f, 0.65f, 1f);
-        ImGui.TextColored(color, status);
+        ImGui.TextColored(color, StatusText);
 
         ImGui.Separator();
 
         var auto = config.AutoTeleport;
-        if (ImGui.Checkbox("落地后自动传送", ref auto))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "AutoTeleport"), ref auto))
         {
             config.AutoTeleport = auto;
             dirty = true;
         }
 
         ImGui.SameLine();
-        ImGui.TextDisabled("关掉后只提示，不动手");
+        ImGui.TextDisabled(OmniLoc.Get(this, "AutoTeleportHint"));
 
         var onlyDataCenter = config.OnlyCrossDataCenter;
-        if (ImGui.Checkbox("只在大区变更时触发", ref onlyDataCenter))
+        if (ImGui.Checkbox(OmniLoc.Get(this, "OnlyCrossDataCenter"), ref onlyDataCenter))
         {
             config.OnlyCrossDataCenter = onlyDataCenter;
             dirty = true;
         }
 
         ImGui.SameLine();
-        ImGui.TextDisabled("取消勾选则同大区跨服也触发");
+        ImGui.TextDisabled(OmniLoc.Get(this, "OnlyCrossDataCenterHint"));
 
         var delay = config.DelaySeconds;
         ImGui.SetNextItemWidth(-160f);
-        if (ImGui.SliderFloat("##delay", ref delay, 0.5f, 10f, "%.1f 秒"))
+        if (ImGui.SliderFloat("##delay", ref delay, 0.5f, 10f, OmniLoc.Get(this, "DelayFormat")))
         {
             config.DelaySeconds = delay;
             dirty = true;
         }
 
         ImGui.SameLine();
-        ImGui.TextDisabled("落地后等待");
+        ImGui.TextDisabled(OmniLoc.Get(this, "DelayHint"));
 
         ImGui.Separator();
 
         var world = CurrentWorldId();
-        ImGui.TextDisabled($"已记录服务器：{WorldName(lastWorld)}");
-        ImGui.TextDisabled($"当前服务器：{WorldName(world)}");
+        ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "RecordedWorld"), WorldName(lastWorld)));
+        ImGui.TextDisabled(string.Format(OmniLoc.Get(this, "CurrentWorld"), WorldName(world)));
 
         if (clientState is { IsLoggedIn: true })
         {
-            ImGui.TextDisabled($"当前区域：{TerritoryName(clientState.TerritoryType)}（{clientState.TerritoryType}）");
+            ImGui.TextDisabled(string.Format(
+                OmniLoc.Get(this, "CurrentTerritory"),
+                TerritoryName(clientState.TerritoryType),
+                clientState.TerritoryType));
         }
         else
         {
-            ImGui.TextDisabled("当前未登录");
+            ImGui.TextDisabled(OmniLoc.Get(this, "NotLoggedIn"));
         }
 
-        if (ImGui.Button("立即前往海都##goto"))
+        if (ImGui.Button(OmniLoc.Get(this, "GoNowButton") + "##goto"))
         {
             GoNow();
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("重置记录##resetworld"))
+        if (ImGui.Button(OmniLoc.Get(this, "ResetRecordButton") + "##resetworld"))
         {
             lastWorld = 0;
             SaveLastWorld(0);
             pending = false;
-            status = "已清除服务器记录";
+            SetStatus("StatusRecordClearedShort");
             dirty = true;
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("重新识别水晶##reload"))
+        if (ImGui.Button(OmniLoc.Get(this, "ReloadAetheryteButton") + "##reload"))
         {
             limsaAetheryte = ResolveLimsaAetheryte();
-            status = limsaAetheryte == 0
-                ? "仍然找不到海都大水晶"
-                : $"已识别海都大水晶（ID {limsaAetheryte}）";
+            if (limsaAetheryte == 0)
+            {
+                SetStatus("StatusAetheryteStillMissing", true);
+            }
+            else
+            {
+                SetStatus("StatusAetheryteFound", false, limsaAetheryte);
+            }
         }
 
         return dirty;
@@ -269,11 +337,15 @@ public sealed class AutoLimsaOnArrival : ModuleBase
     public override bool ResetSettings()
     {
         // 逐字段重置，不能替换 config 对象：宿主持有它的引用，换掉会让设置存不上。
+        var changed = !config.AutoTeleport
+                      || !config.OnlyCrossDataCenter
+                      || Math.Abs(config.DelaySeconds - 2f) > 0.0001f;
+
         config.AutoTeleport = true;
         config.OnlyCrossDataCenter = true;
         config.DelaySeconds = 2f;
         // 刻意不动服务器记录：清掉它会让下次登录被判成跨服，白跑一趟海都。
-        return true;
+        return changed;
     }
 
     private void OnFrameworkUpdate(IFramework framework)
@@ -303,14 +375,14 @@ public sealed class AutoLimsaOnArrival : ModuleBase
             if (IsLimsa(client.TerritoryType))
             {
                 verifying = false;
-                status = "已到达海都";
+                SetStatus("StatusArrived");
                 return;
             }
 
             if ((DateTime.UtcNow - teleportAt).TotalSeconds > 90d)
             {
                 verifying = false;
-                status = "传送后一直没到海都，可能被中断或水晶未解锁";
+                SetStatus("StatusVerifyTimeout", true);
                 return;
             }
         }
@@ -325,7 +397,7 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         {
             lastWorld = world;
             SaveLastWorld(world);
-            status = $"已记录当前服务器（{WorldName(world)}），下次变更时触发";
+            SetStatus("StatusWorldRecorded", false, WorldName(world));
             return;
         }
 
@@ -337,13 +409,13 @@ public sealed class AutoLimsaOnArrival : ModuleBase
 
             if (config.OnlyCrossDataCenter && !IsCrossDataCenter(previous, world))
             {
-                status = $"服务器变更为 {WorldName(world)}（同大区），按设置跳过";
+                SetStatus("StatusSameDataCenterSkipped", false, WorldName(world));
                 return;
             }
 
             pending = true;
             pendingSince = DateTime.UtcNow;
-            status = $"检测到服务器变更 → {WorldName(world)}，等落地";
+            SetStatus("StatusWorldChanged", false, WorldName(world));
             return;
         }
 
@@ -357,7 +429,7 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         if (elapsed > 120d)
         {
             pending = false;
-            status = "等待落地超时，已放弃这次触发";
+            SetStatus("StatusPendingTimeout", true);
             return;
         }
 
@@ -368,7 +440,7 @@ public sealed class AutoLimsaOnArrival : ModuleBase
 
         if (IsBusy())
         {
-            status = "仍在加载，稍后重试";
+            SetStatus("StatusBusy");
             return;
         }
 
@@ -376,19 +448,19 @@ public sealed class AutoLimsaOnArrival : ModuleBase
 
         if (client.TerritoryType == 0)
         {
-            status = "区域还没读到，跳过";
+            SetStatus("StatusTerritoryNotReady");
             return;
         }
 
         if (IsLimsa(client.TerritoryType))
         {
-            status = "已经站在海都，不用传送";
+            SetStatus("StatusAlreadyInLimsa");
             return;
         }
 
         if (!config.AutoTeleport)
         {
-            status = $"已抵达 {TerritoryName(client.TerritoryType)}，自动传送已关闭";
+            SetStatus("StatusAutoTeleportOff", false, TerritoryName(client.TerritoryType));
             return;
         }
 
@@ -396,11 +468,11 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         {
             teleportAt = DateTime.UtcNow;
             verifying = true;
-            status = "已发出传送请求，等待读条";
+            SetStatus("StatusTeleportSent");
             return;
         }
 
-        status = "传送失败：海都大水晶可能未解锁";
+        SetStatus("StatusTeleportFailed", true);
     }
 
     private void GoNow()
@@ -408,13 +480,13 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         var client = clientState;
         if (client == null)
         {
-            status = "拿不到客户端状态服务";
+            SetStatus("StatusNoClientStateShort", true);
             return;
         }
 
         if (!client.IsLoggedIn)
         {
-            status = "还没登录角色";
+            SetStatus("StatusNotLoggedIn");
             return;
         }
 
@@ -425,13 +497,13 @@ public sealed class AutoLimsaOnArrival : ModuleBase
 
         if (limsaAetheryte == 0)
         {
-            status = "找不到海都大水晶，无法传送";
+            SetStatus("StatusAetheryteMissingGo", true);
             return;
         }
 
         if (IsLimsa(client.TerritoryType))
         {
-            status = "已经站在海都，不用传送";
+            SetStatus("StatusAlreadyInLimsa");
             return;
         }
 
@@ -439,11 +511,11 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         {
             teleportAt = DateTime.UtcNow;
             verifying = true;
-            status = "已发出传送请求，等待读条";
+            SetStatus("StatusTeleportSent");
             return;
         }
 
-        status = "传送失败：海都大水晶可能未解锁";
+        SetStatus("StatusTeleportFailed", true);
     }
 
     /// <summary>传送到海都大水晶。走游戏原生 Telepo，不依赖其它模块。</summary>
@@ -503,7 +575,7 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         }
     }
 
-    private static bool IsLimsa(uint territory)
+    private bool IsLimsa(uint territory)
     {
         var name = TerritoryName(territory);
         return name.Contains("利姆萨", StringComparison.Ordinal)
@@ -535,11 +607,11 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         }
     }
 
-    private static string WorldName(uint worldId)
+    private string WorldName(uint worldId)
     {
         if (worldId == 0)
         {
-            return "（未记录）";
+            return OmniLoc.Get(this, "UnknownWorld");
         }
 
         try
@@ -554,11 +626,11 @@ public sealed class AutoLimsaOnArrival : ModuleBase
         }
     }
 
-    private static string TerritoryName(uint territory)
+    private string TerritoryName(uint territory)
     {
         if (territory == 0)
         {
-            return "（未知）";
+            return OmniLoc.Get(this, "UnknownTerritory");
         }
 
         try
@@ -673,13 +745,14 @@ public sealed class AutoLimsaOnArrival : ModuleBase
 
         return 0;
     }
-}
 
-public sealed class AutoLimsaConfig
-{
-    public bool AutoTeleport { get; set; } = true;
+    /// <summary>模块设置：宿主整体序列化，属性名就是配置 JSON 的键，别改名。</summary>
+    private sealed class Settings
+    {
+        public bool AutoTeleport { get; set; } = true;
 
-    public bool OnlyCrossDataCenter { get; set; } = true;
+        public bool OnlyCrossDataCenter { get; set; } = true;
 
-    public float DelaySeconds { get; set; } = 2f;
+        public float DelaySeconds { get; set; } = 2f;
+    }
 }

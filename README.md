@@ -17,10 +17,18 @@
 https://raw.githubusercontent.com/LKami9/LKami9-zhushou-heji/main/TreeHouseModules.json
 ```
 
-`Modules/*.cs` 与原先各仓库发布的文件字节完全一致（SHA256 相同），InternalName 不变，
-所以换用这个合集链接不会丢设置；原来的链接可以删掉。
+模块使用 Omni 在线模块 **API 1**（`OmniModuleBase` + `[ModuleApiVersion(1)]` + `ModuleLocalization`），
+最低宿主版本 **1.1.8.2**。老版本 Omni 无法加载这批模块，请先更新本体。
+
+InternalName 与配置 JSON 键都没有变化，升级模块不会丢设置；旧的 raw 链接可以删掉，只保留合集这一条。
 
 ## 变更记录
+
+- 2026-10-29：全部模块迁移到 **API 1**（宿主 1.1.8.2 起强制）：
+  基类 `ModuleBase` → `OmniModuleBase`、类上补 `[ModuleApiVersion(1)]`、
+  生命周期 `OnEnable/OnDisable/OnDispose` → `OnStart(FeatureLifetime)/OnStop/OnDestroy`、
+  界面文字改为 `ModuleLocalization` 词条 + `OmniLoc.Get`、清单补 `ApiVersion`/`RepositoryURL`/`Localization`。
+  六个模块版本号同步抬到下一个大版本，`MinimumOmniVersion` 统一为 `1.1.8.2`。
 
 - 2026-10-26：新增 `AutoLimsaOnArrival`（LKami9农村人助手）v1.0.0：跨服/超域传送落地稳定后，
   若不在海都就调用原生 `Telepo` 传送到利姆萨·罗敏萨大水晶；服务器记录写在 `pluginConfigs\OmniToolbox\AutoLimsa.state`，
