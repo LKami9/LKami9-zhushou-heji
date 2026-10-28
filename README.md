@@ -22,6 +22,16 @@ https://raw.githubusercontent.com/LKami9/LKami9-zhushou-heji/main/TreeHouseModul
 
 InternalName 与配置 JSON 键都没有变化，升级模块不会丢设置；旧的 raw 链接可以删掉，只保留合集这一条。
 
+## 已知事项
+
+- **幻化助手的物品来源表**：原文件直接引用 `LuminaSupplemental.Excel`，但 Omni 1.1.8.7 的插件目录里没有这个程序集。
+  现在改成文件内的反射桥（按类型名取 `CsvLoader.LoadResource<T>`），编译期不再依赖它：
+  运行时能取到就用真实数据，取不到就退回 wiki 兜底（与原 `try/catch` 分支效果一致）。
+- **仍未本地化的文字**（有意保留）：幻化模板写入/应用的进度提示（那段按“逻辑不动”处理）、
+  Omni 互通的分享文本格式、装备槽位名（同时是查表键）、`无 / 无染色` 等哨兵串、命令参数别名（`界面/打开/关闭/识别`）。
+  这些不挡加载，后续可以逐步挪进词条。
+- **命令入口**：`/omni <模块名> <参数>` 由 `OmniCommandCatalog.FormatModule` 生成；各模块原有的短命令（`/L9CHH`、`/L9KH`、`/L9ML`、`/L9HH`、`/L9HD`）照旧可用。
+
 ## 变更记录
 
 - 2026-10-29：全部模块迁移到 **API 1**（宿主 1.1.8.2 起强制）：
