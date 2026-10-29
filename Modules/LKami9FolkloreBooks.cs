@@ -43,7 +43,7 @@ namespace LKami9.FolkloreBooks;
 ///   InventoryManager / AgentInventoryContext.UseItem / UnlockState.IsItemUnlocked
 /// </summary>
 [ModuleApiVersion(1)]
-public sealed class LKami9FolkloreBooks : OmniModuleBase
+internal sealed class LKami9FolkloreBooks : OmniModuleBase
 {
     // ItemAction 触发的 Action 行号：4107 = 使用传承录，2136 = 使用秘籍
     private const uint FolkloreActionRowId     = 4107;
@@ -147,7 +147,7 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
 
     // 宿主按成员名 config 绑定已保存的配置；不能是 readonly，宿主需要给它赋值。
     // 属性名 / 类型 / 默认值保持不变，否则已发布用户的 JSON 会丢。
-    private LKami9FolkloreBooksConfig config = new();
+    private Settings config = new();
 
     private ICommandManager shortCommandManager;
     private bool shortCommandRegistered;
@@ -1655,24 +1655,18 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
     }
 
     #endregion
-}
 
-[Serializable]
-public sealed class LKami9FolkloreBooksConfig
-{
-    /// <summary>配置结构版本，用于一次性迁移（见 MigrateConfig）。</summary>
-    public int ConfigVersion { get; set; }
+    private sealed class Settings
+    {
+        /// <summary>配置结构版本，用于一次性迁移（见 MigrateConfig）。</summary>
+        public int ConfigVersion { get; set; }
+        public bool WindowOpen { get; set; }
+        /// <summary>贴靠 Omni 主窗口右侧；拖动标题栏可自动解除。</summary>
+        public bool DockToOmni { get; set; } = true;
+        public bool ShowUsed { get; set; }
+        public bool AutoUseFolklore { get; set; }
+        public bool AutoUseSecretRecipe { get; set; }
+        public int BookGapMs { get; set; } = 200;
+    }
 
-    public bool WindowOpen { get; set; }
-
-    /// <summary>贴靠 Omni 主窗口右侧；拖动标题栏可自动解除。</summary>
-    public bool DockToOmni { get; set; } = true;
-
-    public bool ShowUsed { get; set; }
-
-    public bool AutoUseFolklore { get; set; }
-
-    public bool AutoUseSecretRecipe { get; set; }
-
-    public int BookGapMs { get; set; } = 200;
 }

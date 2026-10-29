@@ -55,7 +55,7 @@ namespace LKami9.GlamourHelper;
 ///   results / unknowns 赋值全部在框架线程完成（ApplyPendingOcr）。
 /// </summary>
 [ModuleApiVersion(1)]
-public sealed class LKami9GlamourHelper : OmniModuleBase
+internal sealed class LKami9GlamourHelper : OmniModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
@@ -388,7 +388,7 @@ public sealed class LKami9GlamourHelper : OmniModuleBase
     private bool shortCommandRegistered;
 
     // 宿主按「以 Config 结尾的成员」绑定已保存的配置；不能是 readonly
-    private LKami9GlamourHelperConfig config = new();
+    private Settings config = new();
 
     // ── 运行时状态 ──
     private readonly List<SlotResult> results = [];
@@ -5522,10 +5522,30 @@ try {
   exit 1
 }
 """;
+
+    private sealed class Settings
+    {
+        public string LastImagePath { get; set; } = "";
+        public int OcrTimeoutMs { get; set; } = 30000;
+        public bool ShowSources { get; set; } = true;
+        /// <summary>把没识别上的片段也列出来供手动指派（默认开）。</summary>
+        public bool ShowUnknowns { get; set; } = true;
+        /// <summary>Omni「更好的幻化管理」等价预设。</summary>
+        public List<LKami9GlamourPreset> Presets { get; set; } = [];
+        /// <summary>切换套装时自动试穿绑定的预设。</summary>
+        public bool AutoApplyBoundPreset { get; set; } = true;
+        /// <summary>在游戏角色查看窗口旁显示快捷操作栏。</summary>
+        public bool ShowInspectQuickActions { get; set; } = true;
+        /// <summary>角色快捷栏解除跟随（在标题栏上拖动即可解除），之后可自由拖拽移动。</summary>
+        public bool QuickActionsFree { get; set; }
+        /// <summary>自由拖拽时的窗口位置，跨重启保留。</summary>
+        public System.Numerics.Vector2 QuickActionsPos { get; set; }
+    }
+
 }
 
 /// <summary>一行识别结果</summary>
-public sealed class SlotResult
+internal sealed class SlotResult
 {
     public int Index { get; set; }
     public string Slot { get; set; } = "";
@@ -5549,7 +5569,7 @@ public sealed class SlotResult
     public string Source { get; set; } = "";
 }
 
-public sealed class DyeResult
+internal sealed class DyeResult
 {
     public DyeResult(string name, uint id, bool isEmpty, int score, double x = 0)
     {
@@ -5575,7 +5595,7 @@ public sealed class DyeResult
 
 /// <summary>没能识别成装备的文本片段（供玩家手动指派）</summary>
 /// <remarks>这些必须是**字段**而不是属性 —— ImGui.InputText 需要 ref 变量，属性不能传 ref。</remarks>
-public sealed class UnknownFragment
+internal sealed class UnknownFragment
 {
     public string Text = "";
     public string EditBuffer = "";
@@ -5583,7 +5603,7 @@ public sealed class UnknownFragment
 }
 
 [Serializable]
-public sealed class LKami9GlamourPreset
+internal sealed class LKami9GlamourPreset
 {
     public string Name { get; set; } = "";
     public int GearsetIndex { get; set; } = -1;
@@ -5598,35 +5618,10 @@ public sealed class LKami9GlamourPreset
 }
 
 [Serializable]
-public sealed class LKami9GlamourPresetItem
+internal sealed class LKami9GlamourPresetItem
 {
     public int Slot { get; set; }
     public uint ItemID { get; set; }
     public byte Stain0 { get; set; }
     public byte Stain1 { get; set; }
-}
-
-public sealed class LKami9GlamourHelperConfig
-{
-    public string LastImagePath { get; set; } = "";
-    public int OcrTimeoutMs { get; set; } = 30000;
-    public bool ShowSources { get; set; } = true;
-
-    /// <summary>把没识别上的片段也列出来供手动指派（默认开）。</summary>
-    public bool ShowUnknowns { get; set; } = true;
-
-    /// <summary>Omni「更好的幻化管理」等价预设。</summary>
-    public List<LKami9GlamourPreset> Presets { get; set; } = [];
-
-    /// <summary>切换套装时自动试穿绑定的预设。</summary>
-    public bool AutoApplyBoundPreset { get; set; } = true;
-
-    /// <summary>在游戏角色查看窗口旁显示快捷操作栏。</summary>
-    public bool ShowInspectQuickActions { get; set; } = true;
-
-    /// <summary>角色快捷栏解除跟随（在标题栏上拖动即可解除），之后可自由拖拽移动。</summary>
-    public bool QuickActionsFree { get; set; }
-
-    /// <summary>自由拖拽时的窗口位置，跨重启保留。</summary>
-    public System.Numerics.Vector2 QuickActionsPos { get; set; }
 }

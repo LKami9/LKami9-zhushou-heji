@@ -24,6 +24,11 @@ InternalName 与配置 JSON 键都没有变化，升级模块不会丢设置；�
 
 ## 已知事项
 
+- **配置必须是「嵌套 Settings + config 成员」**：宿主 API 1 的 `FindConfigMember` 会检查这两个条件，
+  不满足直接拒载（日志原文：`配置必须使用嵌套 Settings 类型和 config 成员`）。
+  六个模块的配置类都已改成模块内的 `private sealed class Settings`，属性名、类型、默认值、JSON 键一字未改。
+
+
 - **幻化助手的物品来源表**：原文件直接引用 `LuminaSupplemental.Excel`，但 Omni 1.1.8.7 的插件目录里没有这个程序集。
   现在改成文件内的反射桥（按类型名取 `CsvLoader.LoadResource<T>`），编译期不再依赖它：
   运行时能取到就用真实数据，取不到就退回 wiki 兜底（与原 `try/catch` 分支效果一致）。
@@ -33,6 +38,12 @@ InternalName 与配置 JSON 键都没有变化，升级模块不会丢设置；�
 - **命令入口**：`/omni <模块名> <参数>` 由 `OmniCommandCatalog.FormatModule` 生成；各模块原有的短命令（`/L9CHH`、`/L9KH`、`/L9ML`、`/L9HH`、`/L9HD`）照旧可用。
 
 ## 变更记录
+
+- 2026-10-30：修「只有农村人助手能装」的问题——其余五个模块的配置类还是顶层 `XxxConfig`，
+  被宿主 `FindConfigMember` 拒绝（要求嵌套 `Settings` 类型 + `config` 成员）。
+  已把配置类收敛为模块内 `private sealed class Settings`，配置属性和 JSON 键未变；
+  版本：称号 3.0.1，频道/秘录/幻化/幻卡包 2.0.1，农村人 2.0.0 不变。
+
 
 - 2026-10-29：全部模块迁移到 **API 1**（宿主 1.1.8.2 起强制）：
   基类 `ModuleBase` → `OmniModuleBase`、类上补 `[ModuleApiVersion(1)]`、

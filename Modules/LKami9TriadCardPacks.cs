@@ -39,7 +39,7 @@ namespace LKami9.TriadCardPacks;
 /// 颜色跟随 Omni 主题令牌；目录构建与检测失败不缓存半成品，按周期自动重试。
 /// </summary>
 [ModuleApiVersion(1)]
-public sealed class LKami9TriadCardPacks : OmniModuleBase
+internal sealed class LKami9TriadCardPacks : OmniModuleBase
 {
     private const string ShortCommand = "/L9KH";
 
@@ -118,7 +118,7 @@ public sealed class LKami9TriadCardPacks : OmniModuleBase
     private bool shortCommandRegistered;
 
     // 宿主按“以 Config 结尾的成员”绑定已保存的配置；不能是 readonly，宿主需要给它赋值
-    private LKami9TriadCardPacksConfig config = new();
+    private Settings config = new();
 
     /// <summary>TripleTriadCardObtain 里“以下卡包中随机获得”那一行的行号（国服 7.x 数据）。</summary>
     private const uint CardPackObtainRowId = 8;
@@ -1347,36 +1347,27 @@ public sealed class LKami9TriadCardPacks : OmniModuleBase
     }
 
     #endregion
+
+    private sealed class Settings
+    {
+        public bool ShowOwned { get; set; } = true;
+        public bool AutoUseCards { get; set; }
+        public bool AutoOpenPacks { get; set; }
+        public bool OnlyIncomplete { get; set; } = true;
+        public int IntervalMs { get; set; } = 100;
+        public bool HoverInfo { get; set; } = true;
+        /// <summary>0 = 跟随鼠标，1 = 贴在物品提示框右侧。</summary>
+        public int HoverAnchor { get; set; }
+        public int HoverOffsetX { get; set; }
+        public int HoverOffsetY { get; set; }
+        public bool HoverShowOwned { get; set; } = true;
+    }
+
 }
 
 /// <summary>Omni 的 DalamudServices 没有暴露 IGameGui，这里用标准的 [PluginService] 注入补上。</summary>
-public sealed class LKami9TriadCardPacksHostServices
+internal sealed class LKami9TriadCardPacksHostServices
 {
     [PluginService]
     public static IGameGui GameGui { get; private set; } = null!;
-}
-
-[Serializable]
-public sealed class LKami9TriadCardPacksConfig
-{
-    public bool ShowOwned { get; set; } = true;
-
-    public bool AutoUseCards { get; set; }
-
-    public bool AutoOpenPacks { get; set; }
-
-    public bool OnlyIncomplete { get; set; } = true;
-
-    public int IntervalMs { get; set; } = 100;
-
-    public bool HoverInfo { get; set; } = true;
-
-    /// <summary>0 = 跟随鼠标，1 = 贴在物品提示框右侧。</summary>
-    public int HoverAnchor { get; set; }
-
-    public int HoverOffsetX { get; set; }
-
-    public int HoverOffsetY { get; set; }
-
-    public bool HoverShowOwned { get; set; } = true;
 }

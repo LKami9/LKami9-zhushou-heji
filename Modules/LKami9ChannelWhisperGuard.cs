@@ -36,7 +36,7 @@ namespace OmniToolbox.TreeHouseOnline;
 ///      不用 OmenTools 的 ChatManager.Instance() —— 服务定位器在在线模块里可能拿不到实例（静默无效）。
 /// </summary>
 [ModuleApiVersion(1)]
-public sealed class LKami9ChannelWhisperGuard : OmniModuleBase
+internal sealed class LKami9ChannelWhisperGuard : OmniModuleBase
 {
     private const string LogTag = "[频道守卫]";
 
@@ -44,7 +44,7 @@ public sealed class LKami9ChannelWhisperGuard : OmniModuleBase
     private static readonly string[] ModeKeys = ["ModeContains", "ModeExact", "ModeWildcard"];
 
     // 宿主按名为 config 的成员绑定并自动保存这个对象，模块里没有 config.Save()
-    private LKami9ChannelWhisperGuardConfig config = new();
+    private Settings config = new();
 
     // 私聊先入队，主线程再消费
     private readonly ConcurrentQueue<Whisper> incoming = new();
@@ -1777,32 +1777,26 @@ public sealed class LKami9ChannelWhisperGuard : OmniModuleBase
             public int Depth { get; }
         }
     }
-}
 
-/// <summary>模块配置：宿主整体序列化，字段用属性，别加 readonly。</summary>
-public sealed class LKami9ChannelWhisperGuardConfig
-{
-    /// <summary>关键词，每行一条。</summary>
-    public string Keywords { get; set; } = string.Empty;
+    /// <summary>模块配置：宿主整体序列化，字段用属性，别加 readonly。</summary>
+    private sealed class Settings
+    {
+        /// <summary>关键词，每行一条。</summary>
+        public string Keywords { get; set; } = string.Empty;
+        /// <summary>0 包含 / 1 完全相等 / 2 通配符。</summary>
+        public int MatchMode { get; set; }
+        /// <summary>发送者过滤，逗号分隔，留空不限。</summary>
+        public string SenderFilter { get; set; } = string.Empty;
+        /// <summary>false 时只提醒不登出。</summary>
+        public bool EnableLogout { get; set; } = true;
+        /// <summary>登出延迟（毫秒）。</summary>
+        public int LogoutDelayMs { get; set; }
+        /// <summary>触发冷却（秒）。</summary>
+        public int CooldownSeconds { get; set; } = 10;
+        /// <summary>动作前在聊天框提示。</summary>
+        public bool AnnounceInChat { get; set; } = true;
+        /// <summary>同时检测游戏内 /tell。</summary>
+        public bool MatchGameTell { get; set; }
+    }
 
-    /// <summary>0 包含 / 1 完全相等 / 2 通配符。</summary>
-    public int MatchMode { get; set; }
-
-    /// <summary>发送者过滤，逗号分隔，留空不限。</summary>
-    public string SenderFilter { get; set; } = string.Empty;
-
-    /// <summary>false 时只提醒不登出。</summary>
-    public bool EnableLogout { get; set; } = true;
-
-    /// <summary>登出延迟（毫秒）。</summary>
-    public int LogoutDelayMs { get; set; }
-
-    /// <summary>触发冷却（秒）。</summary>
-    public int CooldownSeconds { get; set; } = 10;
-
-    /// <summary>动作前在聊天框提示。</summary>
-    public bool AnnounceInChat { get; set; } = true;
-
-    /// <summary>同时检测游戏内 /tell。</summary>
-    public bool MatchGameTell { get; set; }
 }

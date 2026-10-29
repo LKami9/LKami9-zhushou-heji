@@ -41,7 +41,7 @@ namespace LKami9.TitleHelper;
 ///   UIState.Instance()->TitleList.RequestTitleList()
 /// </summary>
 [ModuleApiVersion(1)]
-public sealed class LKami9TitleHelper : OmniModuleBase
+internal sealed class LKami9TitleHelper : OmniModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
@@ -150,7 +150,7 @@ public sealed class LKami9TitleHelper : OmniModuleBase
     private Dalamud.Interface.ManagedFontAtlas.IFontHandle omniFont;
 
 
-    private LKami9TitleHelperConfig config = new();
+    private Settings config = new();
 
     private sealed class TitleEntry
     {
@@ -1530,22 +1530,23 @@ public sealed class LKami9TitleHelper : OmniModuleBase
 
 
     #endregion
+
+    private sealed class Settings
+    {
+        public bool WindowOpen { get; set; }
+        public bool Ascending  { get; set; } = true;
+        public bool ScanOnOpen { get; set; }
+        public bool DockToOmni { get; set; } = false;
+        public bool AutoExpandLocked { get; set; }
+        public int  ConfigVersion { get; set; }
+        public int  PageSize   { get; set; } = 100;
+        public string CategoryFilter { get; set; } = string.Empty;
+        public List<uint> Favorites { get; set; } = [];
+    }
+
 }
 
-public sealed class LKami9TitleHelperConfig
-{
-    public bool WindowOpen { get; set; }
-    public bool Ascending  { get; set; } = true;
-    public bool ScanOnOpen { get; set; }
-    public bool DockToOmni { get; set; } = false;
-    public bool AutoExpandLocked { get; set; }
-    public int  ConfigVersion { get; set; }
-    public int  PageSize   { get; set; } = 100;
-    public string CategoryFilter { get; set; } = string.Empty;
-    public List<uint> Favorites { get; set; } = [];
-}
-
-public sealed class LKami9TitleUnlockSnapshot
+internal sealed class LKami9TitleUnlockSnapshot
 {
     public int Version { get; set; } = 1;
     public DateTimeOffset SavedAt { get; set; }

@@ -21,11 +21,11 @@
       "InternalName": "LKami9ChannelWhisperGuard",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "2.0.0",
+      "Version": "2.0.1",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9ChannelWhisperGuard.cs",
-      "Sha256": "D5A2E223D80DBF9E3B4DC4DF80497193C131C285390B45377000823B94AD4D61",
+      "Sha256": "56856402CB2B2D21A44030733AE0BB08E27047C5C0383F6D39C13D93B7B1C770",
       "Localization": {
         "Source": {
           "Title": "国服频道私聊守卫",
@@ -37,11 +37,11 @@
       "InternalName": "LKami9FolkloreBooks",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "2.0.0",
+      "Version": "2.0.1",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9FolkloreBooks.cs",
-      "Sha256": "8C922BD2E0BC9A9F88DFBC5762EC8E5D0180BFBCAC13B2BCC76E5314F656104A",
+      "Sha256": "A6F9EEE0E05F66BAA75E01C84B77217972B58210537F4C7143015AA7B64B188A",
       "Localization": {
         "Source": {
           "Title": "LKami9秘录助手",
@@ -53,11 +53,11 @@
       "InternalName": "LKami9GlamourHelper",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "2.0.0",
+      "Version": "2.0.1",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9GlamourHelper.cs",
-      "Sha256": "57195D04B55B22AAF59C30E97AD4EC1D28D1D551081CFE4092D96117EDE6D875",
+      "Sha256": "3E25140DA50B7F474FA59E661E3BEFCE751152E7E3C141A64C8DF61AFBED0B02",
       "Localization": {
         "Source": {
           "Title": "LKami9幻化助手",
@@ -69,11 +69,11 @@
       "InternalName": "LKami9TitleHelper",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "3.0.0",
+      "Version": "3.0.1",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9TitleHelper.cs",
-      "Sha256": "685BAB8974C1BBC7222DF026B86EE3F95660425A99C0C2205C5F8B1FACDAAD5F",
+      "Sha256": "1F3C81B869A2EBF31C7FF6FE198297EF04C4D85744E6A6C87680AFA3936E261B",
       "Localization": {
         "Source": {
           "Title": "LKami9称号助手",
@@ -85,11 +85,11 @@
       "InternalName": "LKami9TriadCardPacks",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "2.0.0",
+      "Version": "2.0.1",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9TriadCardPacks.cs",
-      "Sha256": "64699022D299FB05EA5C93BA026DC913AC26E5859B882892D8C1ED804654FE10",
+      "Sha256": "B9E77B800181A9DBE79F855613D9523D62CE83533196001A90847AE9EB8E3C89",
       "Localization": {
         "Source": {
           "Title": "LKami9幻卡包助手",
