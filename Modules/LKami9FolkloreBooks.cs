@@ -43,7 +43,7 @@ namespace LKami9.FolkloreBooks;
 ///   InventoryManager / AgentInventoryContext.UseItem / UnlockState.IsItemUnlocked
 /// </summary>
 [ModuleApiVersion(1)]
-internal sealed class LKami9FolkloreBooks : OmniModuleBase
+public sealed class LKami9FolkloreBooks : OmniModuleBase
 {
     // ItemAction 触发的 Action 行号：4107 = 使用传承录，2136 = 使用秘籍
     private const uint FolkloreActionRowId     = 4107;

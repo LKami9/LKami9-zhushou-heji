@@ -41,7 +41,7 @@ namespace LKami9.TitleHelper;
 ///   UIState.Instance()->TitleList.RequestTitleList()
 /// </summary>
 [ModuleApiVersion(1)]
-internal sealed class LKami9TitleHelper : OmniModuleBase
+public sealed class LKami9TitleHelper : OmniModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {

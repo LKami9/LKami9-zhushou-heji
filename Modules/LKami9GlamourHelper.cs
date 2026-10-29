@@ -55,7 +55,7 @@ namespace LKami9.GlamourHelper;
 ///   results / unknowns 赋值全部在框架线程完成（ApplyPendingOcr）。
 /// </summary>
 [ModuleApiVersion(1)]
-internal sealed class LKami9GlamourHelper : OmniModuleBase
+public sealed class LKami9GlamourHelper : OmniModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {

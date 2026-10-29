@@ -39,7 +39,7 @@ namespace LKami9.TriadCardPacks;
 /// 颜色跟随 Omni 主题令牌；目录构建与检测失败不缓存半成品，按周期自动重试。
 /// </summary>
 [ModuleApiVersion(1)]
-internal sealed class LKami9TriadCardPacks : OmniModuleBase
+public sealed class LKami9TriadCardPacks : OmniModuleBase
 {
     private const string ShortCommand = "/L9KH";
 

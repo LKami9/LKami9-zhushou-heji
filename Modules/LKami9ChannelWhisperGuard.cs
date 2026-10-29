@@ -36,7 +36,7 @@ namespace OmniToolbox.TreeHouseOnline;
 ///      不用 OmenTools 的 ChatManager.Instance() —— 服务定位器在在线模块里可能拿不到实例（静默无效）。
 /// </summary>
 [ModuleApiVersion(1)]
-internal sealed class LKami9ChannelWhisperGuard : OmniModuleBase
+public sealed class LKami9ChannelWhisperGuard : OmniModuleBase
 {
     private const string LogTag = "[频道守卫]";
 
