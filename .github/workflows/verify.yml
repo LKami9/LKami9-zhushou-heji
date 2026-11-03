@@ -1,0 +1,25 @@
+name: 校验模块清单
+
+# Omni 加载在线模块时会比对清单里的 Sha256 与文件字节，不一致直接拒载。
+# 手工算哈希很容易漏改，这里每次 push 都校验一遍。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: 校验清单与模块文件一致
+        run: python tools/verify_manifest.py
