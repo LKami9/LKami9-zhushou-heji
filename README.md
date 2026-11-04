@@ -1,6 +1,6 @@
 # LKami9 助手合集（OmniToolbox / TreeHouse 在线模块）
 
-一个链接装六个模块：
+一个链接装七个模块：
 
 | 模块 | InternalName | 说明 |
 |---|---|---|
@@ -10,6 +10,7 @@
 | LKami9秘录助手 | `LKami9FolkloreBooks` | [docs](docs/LKami9FolkloreBooks.md) |
 | LKami9国服频道私聊守卫 | `LKami9ChannelWhisperGuard` | [docs](docs/LKami9ChannelWhisperGuard.md) |
 | LKami9农村人助手 | `AutoLimsaOnArrival` | [docs](docs/AutoLimsaOnArrival.md) |
+| FF14找茬 | `LKami9SpotDiff` | [docs](docs/LKami9SpotDiff.md) |
 
 仓库地址（填到 OmniToolbox → 在线仓库）：
 

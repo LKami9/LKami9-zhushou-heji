@@ -97,5 +97,22 @@
         }
       }
     }
+,
+    {
+      "InternalName": "LKami9SpotDiff",
+      "Author": "LKami9",
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "1.0.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/LKami9SpotDiff.cs",
+      "Sha256": "AE9592B6650052992AB1030DDC56555E5E5B177094F2A9508CCC306BD8CF0C09",
+      "Localization": {
+        "Source": {
+          "Title": "FF14找茬",
+          "Description": "用游戏内物品图标拼成左右两幅图，找出右图被改掉的那几处。素材全部取自游戏本体，纯本地、不联网。"
+        }
+      }
+    }
   ]
 }
