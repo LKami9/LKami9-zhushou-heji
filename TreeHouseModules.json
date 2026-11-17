@@ -85,19 +85,18 @@
       "InternalName": "LKami9TriadCardPacks",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "2.0.1",
+      "Version": "2.0.2",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9TriadCardPacks.cs",
-      "Sha256": "4366211BBA45DE89567ADA3187C700F2A834395F54D1D8879ED131C13253FF34",
+      "Sha256": "B0E30EC6C6690C6F297F9A934D56329003276BB0D7AFE66988EB6777E1F3EBD7",
       "Localization": {
         "Source": {
           "Title": "LKami9幻卡包助手",
           "Description": "列出各幻卡包内含的幻卡与持有情况，可自动使用背包中未持有的幻卡、自动开幻卡包；短命令 /L9KH 一键重检，悬停弹出卡包内容提示，颜色跟随 Omni 主题。"
         }
       }
-    }
-,
+    },
     {
       "InternalName": "LKami9SpotDiff",
       "Author": "LKami9",

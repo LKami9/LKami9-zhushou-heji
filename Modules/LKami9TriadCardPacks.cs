@@ -8,7 +8,6 @@ using Dalamud.Interface;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
-using Dalamud.IoC;
 using Dalamud.Plugin.Services;
 
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -1024,16 +1023,16 @@ public sealed class LKami9TriadCardPacks : OmniModuleBase
         if (this.hoverHooked)
             return;
 
-        // Omni 的 DalamudServices 没有暴露 IGameGui，这里用标准的 [PluginService] 注入补上。
-        // 万一注入失败也不影响使用：下面还有读取 ItemDetail 提示框物品名的兜底方案。
+        // 不能直接调 PluginInterface.Create<T>()：它内部是 CreateAsync+task.Wait()，
+        // 在 OnStart 所在的框架主线程上调用会自死锁，导致游戏卡死。
+        // 这里改用同步的 GetService(Type) 直接取服务；失败也不影响提示框兜底方案。
         try
         {
-            DalamudServices.PluginInterface.Create<LKami9TriadCardPacksHostServices>();
-            this.gameGui = LKami9TriadCardPacksHostServices.GameGui;
+            this.gameGui = DalamudServices.PluginInterface.GetService(typeof(IGameGui)) as IGameGui;
         }
         catch (Exception ex)
         {
-            DalamudServices.PluginLog.Debug(ex, "[LKami9幻卡包助手] PluginService 注入 IGameGui 失败，改用提示框兜底");
+            DalamudServices.PluginLog.Debug(ex, "[LKami9幻卡包助手] 获取 IGameGui 失败，改用提示框兜底");
         }
 
         try
@@ -1363,11 +1362,4 @@ public sealed class LKami9TriadCardPacks : OmniModuleBase
         public bool HoverShowOwned { get; set; } = true;
     }
 
-}
-
-/// <summary>Omni 的 DalamudServices 没有暴露 IGameGui，这里用标准的 [PluginService] 注入补上。</summary>
-internal sealed class LKami9TriadCardPacksHostServices
-{
-    [PluginService]
-    public static IGameGui GameGui { get; private set; } = null!;
 }
