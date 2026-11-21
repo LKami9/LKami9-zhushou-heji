@@ -16,6 +16,10 @@ using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using OmenTools.OmenService;
+// 稳定身份锚点：OmenTools 的公开包装直接暴露原生 Character->ContentId（账号级，改名不变）。
+// 用别名避免与 Dalamud 的同名接口冲突；整个解析路径都在 try-catch 里，失败即降级。
+using OmenObjectTable = OmenTools.Dalamud.Services.Game.Object.Abstractions.IObjectTable;
+using OmenCharacter = OmenTools.Dalamud.Services.Game.Object.Abstractions.ObjectKinds.ICharacter;
 using Dalamud.Interface;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -118,7 +122,12 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             ["NearbyEmpty"] = "附近没有可以添加的玩家。",
             ["NearbyMore"] = "还有 {0} 位未显示",
             ["Empty"] = "花名册还是空的。右键玩家选择「加入本地好友」，或点上方「添加好友」。",
-            ["Summary"] = "共 {0} 人 · 同屏 {1} 人"
+            ["Summary"] = "共 {0} 人 · 同屏 {1} 人",
+            ["FormerNames"] = "曾用名：{0}",
+            ["ClearFormer"] = "清理曾用名",
+            ["FormerCleared"] = "已清理「{0}」的曾用名（{1} 条）。",
+            ["Renamed"] = "检测到「{0}」改名为「{1}」，已自动更新并保留曾用名。",
+            ["EditName"] = "角色名"
         });
 
     private const string WindowID = "##LocalFriendList";
@@ -151,6 +160,12 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
     private readonly HashSet<string> friendKeys = new(StringComparer.OrdinalIgnoreCase);
     private long friendKeyRevision = -1;
     private long namePlateRevision = -1;
+
+    /// <summary>
+    ///     稳定 ID 解析一旦失败（在线模块拿不到 OmenTools 服务）就永久关闭，
+    ///     避免每帧刷日志；此时退回按「名字 + 服务器」匹配，功能不受影响。
+    /// </summary>
+    private bool stableIdDisabled;
 
     /// <summary>本次会话内每个好友的最近查询时间，仅用于界面反馈，不落盘。</summary>
     private readonly Dictionary<string, long> queriedAt = new(StringComparer.Ordinal);
@@ -345,11 +360,22 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
                 string.Equals(name, localName, StringComparison.Ordinal))
                 continue;
 
-            // 跨服来访时 CurrentWorld 是本服，记录里存的是 HomeWorld，两个都要匹配，
-            // 否则跨服好友永远标不出「同屏」。
-            if (!index.TryGetValue(MakeKey(name, player.CurrentWorld.RowId), out var record) &&
-                !index.TryGetValue(MakeKey(name, player.HomeWorld.RowId), out record))
-                continue;
+            var homeWorld = player.HomeWorld.RowId;
+
+            // 优先用账号级 ContentId 认人：改名后依然命中同一条记录。
+            // 拿不到稳定 ID 时退回「名字 + 服务器」，两种世界 ID 都试一遍。
+            var record = FindByStableId(player, name, homeWorld, index);
+            if (record is null)
+            {
+                if (!index.TryGetValue(MakeKey(name, player.CurrentWorld.RowId), out record) &&
+                    !index.TryGetValue(MakeKey(name, homeWorld), out record))
+                    continue;
+            }
+            else if (!string.Equals(record.Name, name, StringComparison.Ordinal))
+            {
+                // 名字对不上但 ContentId 命中 —— 对方改名了，迁移记录。
+                ApplyRename(record, name);
+            }
 
             record.Nearby = true;
             if (now - record.LastSeenAt < LastSeenRefreshSeconds)
@@ -359,6 +385,78 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             record.LastSeenTerritory = territory;
             store.MarkDirty();
         }
+    }
+
+    /// <summary>
+    ///     用 OmenTools 的公开包装取账号级 ContentId（改名不变），据此找好友记录。
+    ///     整条路径兜底，失败即永久降级为名字匹配，绝不影响模块启停。
+    /// </summary>
+    private FriendRecord? FindByStableId(
+        IPlayerCharacter player,
+        string name,
+        uint homeWorld,
+        Dictionary<string, FriendRecord> index)
+    {
+        if (stableIdDisabled)
+            return null;
+
+        ulong contentId;
+        try
+        {
+            var address = player.Address;
+            if (address == nint.Zero)
+                return null;
+
+            var wrapped = OmenTools.IOmenDalamudService<OmenObjectTable>.Instance()
+                .CreateObjectReference(address);
+            if (wrapped is not OmenCharacter character)
+                return null;
+
+            contentId = character.ContentID;
+        }
+        catch (Exception exception)
+        {
+            stableIdDisabled = true;
+            DalamudServices.PluginLog.Warning(
+                $"LocalFriendList: ContentID unavailable, falling back to name matching ({exception.Message})");
+            return null;
+        }
+
+        if (contentId == 0)
+            return null;
+
+        var match = store.FindByContentId(contentId);
+        if (match is not null)
+            return match;
+
+        // 老记录没有 ContentId：按名字命中后回填，之后就能跨改名识别。
+        if (index.TryGetValue(MakeKey(name, homeWorld), out var byName) ||
+            index.TryGetValue(MakeKey(name, player.CurrentWorld.RowId), out byName))
+        {
+            byName.ContentId = contentId;
+            store.MarkDirty();
+            return byName;
+        }
+
+        return null;
+    }
+
+    /// <summary>把旧名存入曾用名并更新当前名；重名/空名时跳过。</summary>
+    private void ApplyRename(FriendRecord record, string newName)
+    {
+        var trimmed = newName.Trim();
+        if (trimmed.Length == 0 || string.Equals(record.Name, trimmed, StringComparison.Ordinal))
+            return;
+
+        var oldName = record.Name;
+        record.PreviousNames ??= [];
+        record.PreviousNames.Add(oldName);
+        record.Name = trimmed;
+        store.MarkDirty();
+        namePlateGui?.RequestRedraw();
+        ReportNotice(string.Format(OmniLoc.Get(this, "Renamed"), oldName, trimmed));
+        DalamudServices.PluginLog.Information(
+            $"LocalFriendList: ContentId {record.ContentId} renamed {oldName} -> {trimmed}");
     }
 
     /// <summary>
@@ -452,7 +550,11 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
         if (local is not null && string.Equals(name, local.Name.TextValue, StringComparison.Ordinal))
             return;
 
-        var exists = store.Find(name, world) is not null;
+        // 改名后名字对不上，优先用菜单目标自带的 ContentId 认人。
+        var byId = store.FindByContentId(target.TargetContentId);
+        if (byId is not null && !string.Equals(byId.Name, name, StringComparison.Ordinal))
+            ApplyRename(byId, name);
+        var exists = store.Find(name, world) is not null || byId is not null;
 
         args.AddMenuItem(
             new MenuItem
@@ -869,10 +971,18 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             // 点名字直接复制「名字@服务器」，省掉菜单里的复制项。
             if (ImGui.IsItemHovered())
             {
-                var tip = string.IsNullOrWhiteSpace(record.Note)
-                    ? OmniLoc.Get(this, "ClickToCopy")
-                    : $"{record.Note}\n{OmniLoc.Get(this, "ClickToCopy")}";
-                OmniControls.HelpTooltip(tip);
+                var lines = new List<string>();
+                var former = DisplayFormerNames(record);
+                if (former.Count > 0)
+                    lines.Add(string.Format(
+                        OmniLoc.Get(this, "FormerNames"),
+                        string.Join("、", former)));
+                if (!string.IsNullOrWhiteSpace(record.Note))
+                    lines.Add(record.Note);
+                if (lines.Count > 0)
+                    lines.Add(string.Empty);
+                lines.Add(OmniLoc.Get(this, "ClickToCopy"));
+                OmniControls.HelpTooltip(string.Join("\n", lines));
             }
 
             if (ImGui.IsItemClicked())
@@ -953,6 +1063,7 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
 
         OmniControls.SectionLabel($"{editName} · {WorldName(editTarget.WorldId)}");
 
+        OmniControls.InputTextWithHint("##lflEditName", OmniLoc.Get(this, "EditName"), ref editName, 32, OmniTheme.Scale(200f));
         OmniControls.InputTextWithHint("##lflEditGroup", OmniLoc.Get(this, "GroupHint"), ref editGroup, 32, OmniTheme.Scale(200f));
         OmniControls.InputTextMultiline(
             "##lflEditNote",
@@ -962,6 +1073,16 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
 
         if (OmniControls.SmallButton(OmniLoc.Get(this, "Save"), false))
         {
+            // 手动改名也保留旧名，兼容没有 ContentId 的老记录。
+            var newName = editName.Trim();
+            if (newName.Length > 0 && !string.Equals(editTarget.Name, newName, StringComparison.Ordinal))
+            {
+                editTarget.PreviousNames ??= [];
+                editTarget.PreviousNames.Add(editTarget.Name);
+                editTarget.Name = newName;
+                ReportNotice(string.Format(OmniLoc.Get(this, "Renamed"), editTarget.PreviousNames[^1], newName));
+            }
+
             editTarget.Group = editGroup.Trim();
             editTarget.Note = editNote.Trim();
             store.MarkDirty();
@@ -973,6 +1094,19 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
         ImGui.SameLine();
         if (OmniControls.SmallButton(OmniLoc.Get(this, "Cancel"), false))
             editTarget = null;
+
+        // 改名横跳会往曾用名里塞入重复/当前名，提供一键清理；有新改名时保留按钮。
+        // Save/Cancel 会把 editTarget 置空，同一帧后续按钮必须重新判空。
+        var clearTarget = editTarget;
+        var formerCount = clearTarget is null ? 0 : DisplayFormerNames(clearTarget).Count;
+        if (clearTarget is not null && formerCount > 0 &&
+            OmniControls.SmallButton(OmniLoc.Get(this, "ClearFormer"), false))
+        {
+            var cleared = formerCount;
+            clearTarget.PreviousNames.Clear();
+            store.MarkDirty();
+            ReportNotice(string.Format(OmniLoc.Get(this, "FormerCleared"), clearTarget.Name, cleared));
+        }
 
         ImGui.EndPopup();
     }
@@ -1059,7 +1193,8 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             return false;
         }
 
-        if (store.Find(trimmed, worldId) is not null)
+        if (store.Find(trimmed, worldId) is not null ||
+            (contentId != 0 && store.FindByContentId(contentId) is not null))
         {
             ReportNotice(OmniLoc.Get(this, "Duplicate"));
             return false;
@@ -1143,9 +1278,7 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             }
 
             if (keyword.Length > 0 &&
-                record.Name.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) < 0 &&
-                record.Note.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) < 0 &&
-                record.Group.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) < 0)
+                !MatchesKeyword(record, keyword))
                 continue;
 
             rows.Add(record);
@@ -1161,6 +1294,48 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             });
 
         return rows;
+    }
+
+    /// <summary>搜索同时匹配当前名、曾用名、备注和分组。</summary>
+    private static bool MatchesKeyword(FriendRecord record, string keyword)
+    {
+        if (record.Name.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0 ||
+            record.Note.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0 ||
+            record.Group.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0)
+            return true;
+
+        foreach (var previous in record.PreviousNames)
+        {
+            if (previous.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    ///     悬浮提示用的曾用名：排除当前名与空项、忽略大小写去重，保持原有先后顺序。
+    ///     改名横跳会把同一个名字反复压进列表，这里统一收敛后再显示。
+    /// </summary>
+    private static List<string> DisplayFormerNames(FriendRecord record)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        seen.Add(record.Name);
+
+        if (record.PreviousNames is null)
+            return result;
+
+        foreach (var previous in record.PreviousNames)
+        {
+            if (string.IsNullOrWhiteSpace(previous))
+                continue;
+            var trimmed = previous.Trim();
+            if (seen.Add(trimmed))
+                result.Add(trimmed);
+        }
+
+        return result;
     }
 
     private int CountNearby()
@@ -1339,6 +1514,8 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
     private sealed class FriendRecord
     {
         public string Name { get; set; } = string.Empty;
+        /// <summary>曾用名（旧存档无此字段，反序列化后为空列表）。</summary>
+        public List<string> PreviousNames { get; set; } = [];
         public uint WorldId { get; set; }
         public ulong ContentId { get; set; }
         public string Group { get; set; } = string.Empty;
@@ -1495,6 +1672,8 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
                     if (string.IsNullOrWhiteSpace(record.Name))
                         continue;
 
+                    // 旧存档没有 PreviousNames，System.Text.Json 会填 null。
+                    record.PreviousNames ??= [];
                     records.Add(record);
                 }
 
@@ -1563,6 +1742,20 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             {
                 if (record.WorldId == worldId &&
                     string.Equals(record.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return record;
+            }
+
+            return null;
+        }
+
+        public FriendRecord? FindByContentId(ulong contentId)
+        {
+            if (contentId == 0)
+                return null;
+
+            foreach (var record in records)
+            {
+                if (record.ContentId == contentId)
                     return record;
             }
 
@@ -1654,6 +1847,7 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
                 if (Find(record.Name, record.WorldId) is not null)
                     continue;
 
+                record.PreviousNames ??= [];
                 record.Nearby = false;
                 records.Add(record);
                 added++;
