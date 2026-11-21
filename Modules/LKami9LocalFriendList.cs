@@ -470,15 +470,17 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
     }
 
     /// <summary>
-    ///     拼出「OT 文本」：两个方框字母 O / T 套 Omni 用的颜色类型 10，后面接菜单文本。
+    ///     拼出「OT 文本」：两个方框字母 O / T 上粉色，后面接菜单文本。
+    ///     注意用 Dalamud 的 <see cref="SeStringBuilder" />（配 <c>AddUiForeground</c>），
+    ///     不是 Lumina 那个（它才有 <c>PushColorType</c>，但产出的是 ReadOnlySeString）。
     /// </summary>
     private static SeString BuildMenuName(string text)
     {
         var builder = new SeStringBuilder();
-        builder.PushColorType(MenuPrefixColorType)
-            .Append($"{(char)SeIconChar.BoxedLetterO}{(char)SeIconChar.BoxedLetterT}")
-            .PopColorType()
-            .AddText($" {text}");
+        builder.AddUiForeground((ushort)MenuPrefixColorType);
+        builder.AddText($"{(char)SeIconChar.BoxedLetterO}{(char)SeIconChar.BoxedLetterT}");
+        builder.AddUiForegroundOff();
+        builder.AddText($" {text}");
         return builder.Build();
     }
 
