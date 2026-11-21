@@ -135,9 +135,6 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
     /// </summary>
     private const string NoGroupMarker = "__none__";
 
-    /// <summary>显示在设置面板底部，用来确认当前加载的确实是这份代码。</summary>
-    private const string ModuleVersion = "1.10.4";
-
     /// <summary>Omni 菜单前缀用的颜色类型（粉）。</summary>
     private const int MenuPrefixColorType = 10;
 
@@ -625,9 +622,6 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             ref importPath,
             260,
             OmniTheme.Scale(300f));
-
-        ImGui.Spacing();
-        ImGui.TextDisabled($"LocalFriendList v{ModuleVersion}");
     }
 
     #endregion
