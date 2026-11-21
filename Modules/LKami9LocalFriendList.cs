@@ -40,13 +40,13 @@ namespace OmniToolbox.TreeHouseOnline;
 ///     添加流程复刻游戏内「选人 → 加入」，窗口与控件沿用 Omni 公共组件。
 /// </summary>
 [ModuleApiVersion(1)]
-public sealed class LocalFriendList : OmniModuleBase
+public sealed class LKami9LocalFriendList : OmniModuleBase
 {
     public override ModuleInfo Info { get; } = new()
     {
         Category = ModuleCategory.Interface,
         Author = "LKami9",
-        Commands = [new("CommandOpen", OmniCommandCatalog.FormatModule(nameof(LocalFriendList), "open"))]
+        Commands = [new("CommandOpen", OmniCommandCatalog.FormatModule(nameof(LKami9LocalFriendList), "open"))]
     };
 
     public override ModuleLocalization Localization { get; } = ModuleLocalization.Create(
