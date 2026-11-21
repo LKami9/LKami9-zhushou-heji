@@ -112,6 +112,22 @@
           "Description": "用游戏内图标玩两种玩法：经典找茬（左右两幅找差异）和找不同（整屏同图找唯一异常）。八种挑战模式可选，纯本地、不联网。"
         }
       }
+    },
+    {
+      "InternalName": "LocalFriendList",
+      "Author": "LKami9",
+      "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
+      "Version": "1.11.0",
+      "ApiVersion": 1,
+      "MinimumOmniVersion": "1.1.8.2",
+      "File": "Modules/LocalFriendList.cs",
+      "Sha256": "5239BC7B1E1B16A55984723CE6746FA223BB968F51AAC988E8C3C1BC5C2816A3",
+      "Localization": {
+        "Source": {
+          "Title": "本地好友列表",
+          "Description": "在本地记录好友，不受游戏好友栏上限约束；附近好友名牌按指定颜色显示，支持同屏检测、一键调起玩家搜索、点击名字复制 名字@服务器，数据可导出备份。"
+        }
+      }
     }
   ]
 }
