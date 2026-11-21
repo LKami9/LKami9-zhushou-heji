@@ -458,7 +458,10 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             new MenuItem
             {
                 Name = BuildMenuName(OmniLoc.Get(this, exists ? "MenuAlready" : "MenuAdd")),
-                // Dalamud 的 Prefix 只能放一个 SeIconChar，两个字母必须写进 Name。
+                // 顶层菜单项必须有前缀，宿主会对 Prefix 为 null 的项强制补上红色 BoxedLetterD
+                // （见 Dalamud ContextMenu.SetupContextMenu）。所以 O 只能挂在这里，T 放到 Name 开头。
+                Prefix = SeIconChar.BoxedLetterO,
+                PrefixColor = (ushort)MenuPrefixColorType,
                 UseDefaultPrefix = false,
                 IsEnabled = !exists,
                 Priority = 0,
@@ -467,15 +470,15 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
     }
 
     /// <summary>
-    ///     拼出「OT 文本」：两个方框字母 O / T 上粉色，后面接菜单文本。
-    ///     注意用 Dalamud 的 <see cref="SeStringBuilder" />（配 <c>AddUiForeground</c>），
+    ///     菜单文字开头的 <c>T</c>，与挂在 <see cref="MenuItem.Prefix" /> 上的 <c>O</c> 拼成 «OT»。
+    ///     用 Dalamud 的 <see cref="SeStringBuilder" />（配 <c>AddUiForeground</c>），
     ///     不是 Lumina 那个（它才有 <c>PushColorType</c>，但产出的是 ReadOnlySeString）。
     /// </summary>
     private static SeString BuildMenuName(string text)
     {
         var builder = new SeStringBuilder();
         builder.AddUiForeground((ushort)MenuPrefixColorType);
-        builder.AddText($"{(char)SeIconChar.BoxedLetterO}{(char)SeIconChar.BoxedLetterT}");
+        builder.AddText($"{(char)SeIconChar.BoxedLetterT}");
         builder.AddUiForegroundOff();
         builder.AddText($" {text}");
         return builder.Build();
