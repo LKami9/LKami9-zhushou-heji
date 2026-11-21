@@ -12,6 +12,7 @@ using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Gui.NamePlate;
+using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using OmenTools.OmenService;
@@ -137,7 +138,14 @@ public sealed class LocalFriendList : OmniModuleBase
     /// <summary>显示在设置面板底部，用来确认当前加载的确实是这份代码。</summary>
     private const string ModuleVersion = "1.10.4";
 
-    private const ushort MenuPrefixColor = 539;
+    /// <summary>Omni 菜单前缀用的颜色类型（粉）。</summary>
+    private const int MenuPrefixColorType = 10;
+
+    /// <summary>
+    ///     仿 Omni 的菜单前缀：两个方框字母 O / T 加颜色类型 10。
+    ///     宿主的 <c>OmniContextMenu</c> 是 internal，在线模块引用不到，按同样的构造自己拼一份。
+    /// </summary>
+    private static readonly ReadOnlySeString MenuPrefix = CreateMenuPrefix();
 
     private readonly FriendStore store = new();
     private Settings config = new();
@@ -461,12 +469,21 @@ public sealed class LocalFriendList : OmniModuleBase
                 Name = new SeStringBuilder()
                     .AddText(OmniLoc.Get(this, exists ? "MenuAlready" : "MenuAdd"))
                     .Build(),
-                UseDefaultPrefix = true,
-                PrefixColor = MenuPrefixColor,
+                Prefix = MenuPrefix,
+                UseDefaultPrefix = false,
                 IsEnabled = !exists,
                 Priority = 0,
                 OnClicked = _ => AddFriend(name, world, target.TargetContentId, string.Empty, string.Empty)
             });
+    }
+
+    private static ReadOnlySeString CreateMenuPrefix()
+    {
+        var builder = new SeStringBuilder();
+        builder.PushColorType(MenuPrefixColorType);
+        builder.Append($"{(char)SeIconChar.BoxedLetterO}{(char)SeIconChar.BoxedLetterT}");
+        builder.PopColorType();
+        return builder.ToReadOnlySeString();
     }
 
     #endregion
