@@ -128,6 +128,12 @@ public sealed class LocalFriendList : OmniModuleBase
     private const long   LastSeenRefreshSeconds = 60;
     private const int    MaxNearbyRows = 4;
 
+    /// <summary>
+    ///     「只看未分组」的筛选标记。空字符串已经被「全部分组」占用，
+    ///     直接拿 "" 当筛选值会被 <see cref="BuildRows" /> 当成「不筛选」，于是点「未分组」显示的是全部。
+    /// </summary>
+    private const string NoGroupMarker = "__none__";
+
     /// <summary>显示在设置面板底部，用来确认当前加载的确实是这份代码。</summary>
     private const string ModuleVersion = "1.10.4";
 
@@ -143,7 +149,7 @@ public sealed class LocalFriendList : OmniModuleBase
     private ICommandManager? commandManager;
     private OmniRecordWindow? frame;
 
-    private readonly HashSet<string> friendKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> friendKeys = new(StringComparer.OrdinalIgnoreCase);
     private long friendKeyRevision = -1;
     private long namePlateRevision = -1;
 
@@ -206,6 +212,13 @@ public sealed class LocalFriendList : OmniModuleBase
         DropLegacyNpcRecords();
 
         groupFilter = store.GroupFilter;
+        // 旧版把「未分组」的显示名直接当筛选值存了，这里纠正成标记，否则升级后列表会变空。
+        if (groupFilter.Length > 0 && groupFilter == OmniLoc.Get(this, "GroupNone"))
+        {
+            groupFilter = NoGroupMarker;
+            store.GroupFilter = groupFilter;
+        }
+
         onlineOnly = store.OnlineOnly;
 
         frame = new OmniRecordWindow(
@@ -301,16 +314,21 @@ public sealed class LocalFriendList : OmniModuleBase
 
     private void ScanNearby()
     {
-        if (objectTable is null)
-            return;
-
         foreach (var record in store.Records)
             record.Nearby = false;
+
+        if (objectTable is null)
+            return;
 
         var local = objectTable.LocalPlayer;
         var localName = local?.Name.TextValue;
         var territory = CurrentTerritory();
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        // 建一次索引，避免每个玩家都对全表做一次线性查找（好友多时是 O(n²)）。
+        var index = new Dictionary<string, FriendRecord>(StringComparer.OrdinalIgnoreCase);
+        foreach (var record in store.Records)
+            index[record.Key] = record;
 
         foreach (var battle in objectTable.PlayerObjects)
         {
@@ -328,8 +346,10 @@ public sealed class LocalFriendList : OmniModuleBase
                 string.Equals(name, localName, StringComparison.Ordinal))
                 continue;
 
-            var record = store.Find(name, player.CurrentWorld.RowId);
-            if (record is null)
+            // 跨服来访时 CurrentWorld 是本服，记录里存的是 HomeWorld，两个都要匹配，
+            // 否则跨服好友永远标不出「同屏」。
+            if (!index.TryGetValue(MakeKey(name, player.CurrentWorld.RowId), out var record) &&
+                !index.TryGetValue(MakeKey(name, player.HomeWorld.RowId), out record))
                 continue;
 
             record.Nearby = true;
@@ -636,7 +656,9 @@ public sealed class LocalFriendList : OmniModuleBase
     }
 
     private string CurrentGroupLabel() =>
-        string.IsNullOrEmpty(groupFilter) ? OmniLoc.Get(this, "GroupAll") : groupFilter;
+        string.IsNullOrEmpty(groupFilter)
+            ? OmniLoc.Get(this, "GroupAll")
+            : groupFilter == NoGroupMarker ? OmniLoc.Get(this, "GroupNone") : groupFilter;
 
     private void DrawGroupCombo(float width)
     {
@@ -652,13 +674,13 @@ public sealed class LocalFriendList : OmniModuleBase
         for (var index = 0; index < groups.Count; index++)
         {
             var raw = groups[index];
-            var group = raw switch
-            {
-                "" => OmniLoc.Get(this, "GroupNone"),
-                _ => raw
-            };
-            if (ImGui.Selectable($"{group}##lflGroup{index}", string.Equals(raw, groupFilter, StringComparison.Ordinal)))
-                SetGroupFilter(raw);
+            // 空分组用专用标记参与筛选，否则和「全部分组」的二值撞在一起。
+            var filterValue = raw.Length == 0 ? NoGroupMarker : raw;
+            var group = raw.Length == 0 ? OmniLoc.Get(this, "GroupNone") : raw;
+            if (ImGui.Selectable(
+                    $"{group}##lflGroup{index}",
+                    string.Equals(filterValue, groupFilter, StringComparison.Ordinal)))
+                SetGroupFilter(filterValue);
         }
 
         ImGui.EndCombo();
@@ -1112,8 +1134,12 @@ public sealed class LocalFriendList : OmniModuleBase
 
             if (!string.IsNullOrEmpty(groupFilter))
             {
-                var group = string.IsNullOrEmpty(record.Group) ? OmniLoc.Get(this, "GroupNone") : record.Group;
-                if (!string.Equals(group, groupFilter, StringComparison.Ordinal))
+                if (groupFilter == NoGroupMarker)
+                {
+                    if (!string.IsNullOrEmpty(record.Group))
+                        continue;
+                }
+                else if (!string.Equals(record.Group, groupFilter, StringComparison.Ordinal))
                     continue;
             }
 
