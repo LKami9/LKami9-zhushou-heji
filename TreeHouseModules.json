@@ -37,15 +37,15 @@
       "InternalName": "LKami9FolkloreBooks",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "2.1.0",
+      "Version": "2.2.0",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9FolkloreBooks.cs",
-      "Sha256": "075DB70599C7A00C7BB5147CDB721D83ACF5BFBE0BC85670B17F16E7D4E163AA",
+      "Sha256": "B4C4E34A82E0F9D7002A7F0D71D5DDC809406650839DCCAE79828514D6439FD7",
       "Localization": {
         "Source": {
           "Title": "LKami9秘录助手",
-          "Description": "独立窗口：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口；持有量含 Omni 库存（鞍囊 / 雇员 / 收藏柜 / 部队箱），需 HQ 的材料单独标记；材料名可点击打开制作笔记，书在雇员处可一键取回，支持自动使用。"
+          "Description": "独立窗口：检测传承录 / 秘籍使用状态，汇总兑换材料、持有量与缺口；持有量含 Omni 库存（鞍囊 / 雇员 / 收藏柜 / 部队箱），需 HQ 的材料单独标记；材料名与书名可点击打开 Omni 物品信息窗（行情 / 来源 / 购买），书在雇员处可一键取回，支持自动使用。"
         }
       }
     },

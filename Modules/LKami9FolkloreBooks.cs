@@ -40,8 +40,10 @@ namespace LKami9.FolkloreBooks;
 ///     5 秒超时跳过该本；每确认一本局部刷新，全部完成自动汇总。
 ///   · 兑换材料持有量统计货币 / 水晶容器、四个背包、鞍囊与宇宙背包，并可叠 Omni 库存快照
 ///     （含雇员 / 收藏柜 / 部队箱 / 住宅缓存）；悬停材料名可看容器分布。
-///   · 材料名交互：左键打开制作笔记（该材料可制作时）/ 右键查看 Omni 物品信息 / Shift+左键复制名称；
-///     悬停可看持有分布（各容器数量），「持有」列同样可悬停。
+///   · 材料名 / 书名交互：左键打开制作笔记（材料可制作时）或 Omni 物品信息窗，右键直接打开物品信息，
+///     Shift+左键复制名称；悬停可看持有分布（各容器数量），「持有」列同样可悬停。
+///   · 物品信息窗走官方 IPC `OmniToolbox.UI.OpenItemInformation`（Omni 1.1.9+），
+///     窗内含行情、来源与购买入口，兑换材料时不用再自己去翻。
 ///   · 窗口内按书名或材料名搜索，背包里未使用的书可单本使用。
 ///
 /// 接口（全部公开，不写内存）：
@@ -181,6 +183,8 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
             ["CostHqRequired"]     = "需 HQ",
             ["Copied"]      = "已复制：{0}",
             ["ClickToCopy"] = "点击复制：{0}",
+            ["StatusItemInfoOpened"]   = "已打开物品信息：{0}",
+            ["StatusItemInfoRejected"] = "无法打开物品信息：{0}（物品不在当前客户端目录中）",
             ["HintRecipe"]        = "左键：打开制作笔记",
             ["HintItemInfoLeft"]  = "左键：查看物品信息",
             ["HintCopyLeft"]      = "左键：复制名称",
@@ -264,21 +268,20 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
     private DateTime omniSampledUtc = DateTime.MinValue;
 
     /// <summary>
-    /// 打开 Omni 物品信息窗的三级回退：
-    ///   1. 宿主补了 IPC（<see cref="OpenItemInfoIpc"/>）就用 IPC，最稳；
-    ///   2. 否则反射宿主内部——MainWindow 有公开静态单例，ItemSearchTab 里有个 Action&lt;uint&gt; 字段；
-    ///   3. 都失败就退回复制名称。
-    /// 反射只按「形状」找成员（类型名 / 字段类型），不依赖混淆后的名字。
+    /// 宿主提供的物品信息窗口（Omni 1.1.9 起，官方文档见 TreePublic/IPC/物品信息.md）。
+    /// 参数是基础物品 ID（不含 HQ 偏移），返回 JSON：accepted / itemID / error。
+    /// 调用后宿主自行复用窗口并置前，主窗口无需打开。
     /// </summary>
-    private const string OpenItemInfoIpc = "OmniToolbox.Item.OpenInformation";
+    private const string OpenItemInfoIpc = "OmniToolbox.UI.OpenItemInformation";
 
     /// <summary>Omni 自动存取：把物品从雇员 / 鞍囊 / 部队箱取回背包。</summary>
     private const string AutoStoreRetrieveIpc = "OmniToolbox.AutoStore.StartRetrieve";
 
-    private Action<uint>? openItemInfoAction;
-    private DateTime nextOpenItemInfoAttemptUtc = DateTime.MinValue;
-    private int      openItemInfoAttempts;
-    private string? openItemInfoReason;
+    /// <summary>宿主是否提供物品信息 IPC；null 表示还没探测过。</summary>
+    private bool? openItemInfoAvailable;
+
+    /// <summary>异步流程里想复制名称时先记下来，回到绘制线程再写剪贴板（ImGui 不能在后台线程调用）。</summary>
+    private string? pendingCopyName;
 
     private bool built;
     // 状态文字：键 + 参数 + 是否异常（SPEC 第 8 节），渲染时再取本地化文案
@@ -380,10 +383,8 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
         this.recipeIndexBuilt             = false;
         this.pendingOmniHq                = null;
         this.pendingOmniLocations         = null;
-        this.openItemInfoAction           = null;
-        this.openItemInfoReason           = null;
-        this.nextOpenItemInfoAttemptUtc   = DateTime.MinValue;
-        this.openItemInfoAttempts         = 0;
+        this.openItemInfoAvailable        = null;
+        this.pendingCopyName              = null;
     }
 
     /// <summary>失败态状态文字的颜色（原版没有判色，这里只给异常态上色）。</summary>
@@ -1243,186 +1244,32 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
     }
 
     /// <summary>解析一次「打开物品信息」入口，成功后缓存委托。</summary>
+    /// <summary>
+    /// 探测宿主是否提供物品信息 IPC。宿主启动时就注册，模块加载更晚，正常一次即可探到；
+    /// 探不到只影响「点击材料名打开物品信息」，点击会退回复制名称。
+    /// </summary>
     private void EnsureOpenItemInfo()
     {
-        // 成功一次就固定下来；失败则每 5 秒最多重试一次（宿主窗口可能是延迟创建的）。
-        // 试满 3 次仍失败就停手：宿主这版没有可用入口，再试也只是反复反射和刷日志。
-        if (this.openItemInfoAction is not null)
+        if (this.openItemInfoAvailable is not null)
             return;
 
-        if (this.openItemInfoAttempts >= 3)
-            return;
-
-        if (DateTime.UtcNow < this.nextOpenItemInfoAttemptUtc)
-            return;
-
-        this.nextOpenItemInfoAttemptUtc = DateTime.UtcNow.AddSeconds(5);
-
-        // 1) 宿主注册了约定 IPC
         try
         {
-            var subscriber = DalamudServices.PluginInterface.GetIpcSubscriber<uint, bool>(OpenItemInfoIpc);
-            if (subscriber.HasFunction)
-            {
-                this.openItemInfoAction = itemId => subscriber.InvokeFunc(itemId);
-                this.openItemInfoReason = null;
-                return;
-            }
+            this.openItemInfoAvailable = DalamudServices.PluginInterface
+                .GetIpcSubscriber<uint, Task<string>>(OpenItemInfoIpc)
+                .HasFunction;
         }
         catch (Exception ex)
         {
+            this.openItemInfoAvailable = false;
             DalamudServices.PluginLog.Debug(ex, "[LKami9秘录助手] 探测物品信息 IPC 失败");
         }
 
-        // 2) 反射宿主内部
-        if (this.TryResolveItemInformationAction(out var action, out var reason))
-        {
-            this.openItemInfoAction = action;
-            this.openItemInfoReason = null;
-            return;
-        }
-
-        this.openItemInfoAction = null;
-        this.openItemInfoReason = reason;
-        this.openItemInfoAttempts++;
-
-        // 刻意不在这里替玩家打开 Omni 主界面：宿主窗口是懒创建的，强行拉起会打断玩家操作。
-        // 想手动试这条路，设置页「诊断」里会给一次机会。
-        DalamudServices.PluginLog.Debug($"[LKami9秘录助手] 物品信息入口不可用：{reason}");
+        if (this.openItemInfoAvailable == false)
+            DalamudServices.PluginLog.Debug(
+                $"[LKami9秘录助手] 宿主未注册 {OpenItemInfoIpc}（Omni 版本过旧？），点击材料名改为复制名称");
     }
 
-    /// <summary>通过 Dalamud 的公开插件接口打开 Omni 主界面，让宿主构造自己的窗口对象。</summary>
-    /// <summary>重置自动重试计数，让「诊断」可以再触发一轮解析。</summary>
-    private void ResetOpenItemInfoAttempts()
-    {
-        this.openItemInfoAttempts        = 0;
-        this.nextOpenItemInfoAttemptUtc  = DateTime.MinValue;
-    }
-
-    private bool TryOpenHostMainUi()
-    {
-        try
-        {
-            var plugin = DalamudServices.PluginInterface.InstalledPlugins
-                .FirstOrDefault(candidate => candidate.InternalName == "OmniToolbox");
-
-            if (plugin is not { IsLoaded: true })
-                return false;
-
-            plugin.OpenMainUi();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            DalamudServices.PluginLog.Debug(ex, "[LKami9秘录助手] 请求打开 Omni 主界面失败");
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// 反射取 MainWindow 单例 → itemSearchTab → Action&lt;uint&gt; 字段。
-    /// 成员按形状定位：静态属性返回 MainWindow 自身、字段类型名 ItemSearchTab、字段类型 Action&lt;uint&gt;。
-    /// </summary>
-    private bool TryResolveItemInformationAction(out Action<uint>? action, out string reason, List<string>? trace = null)
-    {
-        action = null;
-
-        try
-        {
-            // 模块可能加载在独立的 AssemblyLoadContext 里，Type.GetType 未必能解析宿主程序集，
-            // 所以先在已加载程序集里按名字找。
-            var hostAssembly = AppDomain.CurrentDomain.GetAssemblies()
-                .FirstOrDefault(assembly => assembly.GetName().Name == "OmniToolbox");
-
-            var mainWindowType = hostAssembly?.GetType("OmniToolbox.UI.MainWindow")
-                ?? Type.GetType("OmniToolbox.UI.MainWindow, OmniToolbox");
-
-            trace?.Add($"宿主程序集：{(hostAssembly is null ? "未找到" : hostAssembly.GetName().Version?.ToString() ?? "ok")}");
-            trace?.Add($"MainWindow 类型：{(mainWindowType is null ? "未找到" : "ok")}");
-
-            if (mainWindowType is null)
-            {
-                reason = "未加载 OmniToolbox.UI.MainWindow";
-                return false;
-            }
-
-            // 单例可能以静态字段、静态属性或静态工厂方法三种形式存在，按稳定性依次尝试：
-            // 字段是宿主自己的实例存储，方法有可能是工厂（会新建对象），所以放最后。
-            var staticFields = mainWindowType
-                .GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-                .Where(field => field.FieldType == mainWindowType)
-                .ToArray();
-
-            trace?.Add($"静态字段候选 {staticFields.Length}：" + string.Join("，", staticFields.Select(field =>
-                $"{field.Name}={(field.GetValue(null) is null ? "null" : "有值")}")));
-
-            var instance = staticFields
-                .Select(field => field.GetValue(null))
-                .FirstOrDefault(value => value is not null);
-
-            instance ??= mainWindowType
-                .GetProperties(BindingFlags.Public | BindingFlags.Static)
-                .Where(property => property.PropertyType == mainWindowType)
-                .Select(property => property.GetValue(null))
-                .FirstOrDefault(value => value is not null);
-
-            instance ??= mainWindowType
-                .GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .Where(method => method.ReturnType == mainWindowType && method.GetParameters().Length == 0)
-                .Select(method => method.Invoke(null, null))
-                .FirstOrDefault(value => value is not null);
-
-            trace?.Add($"MainWindow 实例：{(instance is null ? "未取到" : instance.GetType().Name)}");
-
-            if (instance is null)
-            {
-                reason = "未取到 MainWindow 实例（静态字段/属性/方法均为空）";
-                return false;
-            }
-
-            // 先开窗，否则物品信息窗没有绘制宿主
-            mainWindowType.GetMethod("Open", BindingFlags.Public | BindingFlags.Instance)?.Invoke(instance, null);
-
-            var searchTab = mainWindowType
-                .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(field => field.FieldType.Name == "ItemSearchTab")
-                ?.GetValue(instance);
-
-            trace?.Add($"ItemSearchTab：{(searchTab is null ? "未取到" : "ok")}");
-
-            if (searchTab is null)
-            {
-                reason = "未取到 ItemSearchTab";
-                return false;
-            }
-
-            var field = searchTab.GetType()
-                .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .Where(candidate => candidate.FieldType == typeof(Action<uint>))
-                .OrderByDescending(candidate =>
-                    candidate.Name.Contains("ItemInformation", StringComparison.OrdinalIgnoreCase))
-                .FirstOrDefault();
-
-            trace?.Add($"Action<uint> 字段：{field?.Name ?? "未找到"}");
-
-            if (field?.GetValue(searchTab) is not Action<uint> open)
-            {
-                reason = "ItemSearchTab 上没有 Action<uint> 字段";
-                return false;
-            }
-
-            action = open;
-            reason = string.Empty;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            reason = ex.GetBaseException().Message;
-            return false;
-        }
-    }
-
-    /// <summary>把「打开物品信息」的解析过程逐条打到聊天框，供游戏内排查。</summary>
     /// <summary>
     /// 请求 Omni 把这本书取回背包。source 按 Omni 快照里的容器挑一个可取的；
     /// 拿不到分布时传 None，由 Omni 自己选。
@@ -1500,27 +1347,20 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
         }
     }
 
+    /// <summary>检查宿主是否提供物品信息 IPC，结果打到聊天框。</summary>
     private void PrintItemInfoDiagnostics()
     {
-        this.ResetOpenItemInfoAttempts();
+        this.openItemInfoAvailable = null;
+        this.EnsureOpenItemInfo();
 
-        var trace = new List<string>();
-        var ok    = this.TryResolveItemInformationAction(out _, out var reason, trace);
-
-        foreach (var line in trace)
-            DalamudServices.ChatGUI.Print($"[秘录助手] {line}");
-
-        if (ok)
+        if (this.openItemInfoAvailable == true)
         {
-            DalamudServices.ChatGUI.Print("[秘录助手] 物品信息入口可用");
+            DalamudServices.ChatGUI.Print($"[秘录助手] 物品信息入口可用（{OpenItemInfoIpc}）");
             return;
         }
 
-        DalamudServices.ChatGUI.Print($"[秘录助手] 物品信息入口不可用：{reason}");
-
-        // 主窗口是首次打开时才构造的：诊断时手动拉一次，让玩家再点一次
-        if (this.TryOpenHostMainUi())
-            DalamudServices.ChatGUI.Print("[秘录助手] 已请求打开 Omni 主界面，稍等一秒再点一次「诊断」");
+        DalamudServices.ChatGUI.Print(
+            $"[秘录助手] 物品信息入口不可用：宿主没有注册 {OpenItemInfoIpc}。该接口自 Omni 1.1.9 起提供，请更新本体。");
     }
 
     /// <summary>Omni 返回的容器名 → 词条键；未知容器直接显示原文。</summary>
@@ -1608,12 +1448,12 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
             {
                 lines.Add(OmniLoc.Get(this, "HintRecipe"));
                 lines.Add(OmniLoc.Get(this,
-                    this.openItemInfoAction is null ? "HintCopyRight" : "HintItemInfoRight"));
+                    this.openItemInfoAvailable == true ? "HintItemInfoRight" : "HintCopyRight"));
             }
             else
             {
                 lines.Add(OmniLoc.Get(this,
-                    this.openItemInfoAction is null ? "HintCopyLeft" : "HintItemInfoLeft"));
+                    this.openItemInfoAvailable == true ? "HintItemInfoLeft" : "HintCopyLeft"));
             }
 
             ImGui.SetTooltip(string.Join('\n', lines));
@@ -1623,8 +1463,11 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
 
         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
         {
-            if (!this.TryOpenItemInfo(itemId))
+            if (this.openItemInfoAvailable == true)
+                this.OpenItemInformation(itemId, name);
+            else
                 this.CopyName(name);
+
             return;
         }
 
@@ -1641,8 +1484,11 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
         if (recipeId != 0 && TryOpenRecipe(recipeId))
             return;
 
-        if (this.TryOpenItemInfo(itemId))
+        if (this.openItemInfoAvailable == true)
+        {
+            this.OpenItemInformation(itemId, name);
             return;
+        }
 
         this.CopyName(name);
     }
@@ -1708,29 +1554,52 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
         }
     }
 
-    /// <summary>调用宿主的物品信息入口；不可用或调用失败时返回 false。</summary>
-    private bool TryOpenItemInfo(uint itemId)
-    {
-        if (this.openItemInfoAction is not { } open)
-            return false;
+    /// <summary>
+    /// 请求宿主打开物品信息窗（含行情 / 来源 / 购买入口）。
+    /// 走官方 IPC：参数是基础物品 ID，返回 accepted / itemID / error 的 JSON。
+    /// 异步执行，失败时回落成复制名称。
+    /// </summary>
+    private void OpenItemInformation(uint itemId, string name)
+        => _ = this.OpenItemInformationAsync(itemId, name);
 
+    private async Task OpenItemInformationAsync(uint itemId, string name)
+    {
         try
         {
-            open(itemId);
-            return true;
+            var subscriber = DalamudServices.PluginInterface
+                .GetIpcSubscriber<uint, Task<string>>(OpenItemInfoIpc);
+
+            if (!subscriber.HasFunction)
+            {
+                this.openItemInfoAvailable = false;
+                this.pendingCopyName       = name;
+                return;
+            }
+
+            var response = await subscriber.InvokeFunc(itemId).ConfigureAwait(false);
+
+            if (IsAccepted(response))
+            {
+                this.SetStatus("StatusItemInfoOpened", false, name);
+                return;
+            }
+
+            // accepted=false：ID 为 0 或不在当前客户端目录里，宿主保留原窗口
+            DalamudServices.PluginLog.Warning(
+                $"[LKami9秘录助手] 打开物品信息被拒绝（{name} / {itemId}）：{response}");
+            this.SetStatus("StatusItemInfoRejected", true, name);
         }
         catch (Exception ex)
         {
-            // 宿主内部结构变了：退回复制，避免点了没反应
+            // IPC 签名不符 / 宿主卸载 / 超时：退回复制，避免点了没反应
             DalamudServices.PluginLog.Warning(ex, "[LKami9秘录助手] 打开物品信息失败，改为复制名称");
-            this.openItemInfoAction = null;
-            this.openItemInfoReason = ex.GetBaseException().Message;
-            return false;
+            this.pendingCopyName = name;
         }
     }
 
     /// <summary>物品信息入口不可用时的原因（用于设置页提示，可空）。</summary>
-    private string? OpenItemInfoUnavailableReason => this.openItemInfoAction is null ? this.openItemInfoReason : null;
+    private string? OpenItemInfoUnavailableReason
+        => this.openItemInfoAvailable == false ? $"宿主未注册 {OpenItemInfoIpc}（需 Omni 1.1.9+）" : null;
 
     #endregion
 
@@ -1740,6 +1609,13 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        // 异步流程（打开物品信息失败）只能在主线程写剪贴板，这里补上
+        if (this.pendingCopyName is { } pending)
+        {
+            this.pendingCopyName = null;
+            this.CopyName(pending);
+        }
+
         // 取回请求受理后等物品落到背包再重检一次
         if (this.nextRescanUtc != DateTime.MinValue && DateTime.UtcNow >= this.nextRescanUtc)
         {
@@ -2421,6 +2297,9 @@ public sealed class LKami9FolkloreBooks : OmniModuleBase
 
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(row.Book.Name);
+
+        // 书名和材料名同一套交互：左键打开物品信息（看兑换来源）、右键同左、Shift+左键复制
+        this.ItemNameInteraction(row.Book.ItemId, row.Book.Name);
 
         if (row.InBag)
         {
