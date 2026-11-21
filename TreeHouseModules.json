@@ -117,11 +117,11 @@
       "InternalName": "LKami9LocalFriendList",
       "Author": "LKami9",
       "RepositoryURL": "https://github.com/LKami9/LKami9-zhushou-heji",
-      "Version": "1.11.7",
+      "Version": "1.11.8",
       "ApiVersion": 1,
       "MinimumOmniVersion": "1.1.8.2",
       "File": "Modules/LKami9LocalFriendList.cs",
-      "Sha256": "D274E0822BBAD74A769875BB2A714E57A8B5AB89B72DB15B22AC812B179C6148",
+      "Sha256": "1BEBF3116CC72E451FB8DBE29EEB9E12DF570919CC34CF9259F698664629EBBE",
       "Localization": {
         "Source": {
           "Title": "本地好友列表",
