@@ -141,12 +141,6 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
     /// <summary>Omni 菜单前缀用的颜色类型（粉）。</summary>
     private const int MenuPrefixColorType = 10;
 
-    /// <summary>
-    ///     仿 Omni 的菜单前缀：两个方框字母 O / T 加颜色类型 10。
-    ///     宿主的 <c>OmniContextMenu</c> 是 internal，在线模块引用不到，按同样的构造自己拼一份。
-    /// </summary>
-    private static readonly ReadOnlySeString MenuPrefix = CreateMenuPrefix();
-
     private readonly FriendStore store = new();
     private Settings config = new();
 
@@ -466,10 +460,8 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
         args.AddMenuItem(
             new MenuItem
             {
-                Name = new SeStringBuilder()
-                    .AddText(OmniLoc.Get(this, exists ? "MenuAlready" : "MenuAdd"))
-                    .Build(),
-                Prefix = MenuPrefix,
+                Name = BuildMenuName(OmniLoc.Get(this, exists ? "MenuAlready" : "MenuAdd")),
+                // Dalamud 的 Prefix 只能放一个 SeIconChar，两个字母必须写进 Name。
                 UseDefaultPrefix = false,
                 IsEnabled = !exists,
                 Priority = 0,
@@ -477,13 +469,17 @@ public sealed class LKami9LocalFriendList : OmniModuleBase
             });
     }
 
-    private static ReadOnlySeString CreateMenuPrefix()
+    /// <summary>
+    ///     拼出「OT 文本」：两个方框字母 O / T 套 Omni 用的颜色类型 10，后面接菜单文本。
+    /// </summary>
+    private static SeString BuildMenuName(string text)
     {
         var builder = new SeStringBuilder();
-        builder.PushColorType(MenuPrefixColorType);
-        builder.Append($"{(char)SeIconChar.BoxedLetterO}{(char)SeIconChar.BoxedLetterT}");
-        builder.PopColorType();
-        return builder.ToReadOnlySeString();
+        builder.PushColorType(MenuPrefixColorType)
+            .Append($"{(char)SeIconChar.BoxedLetterO}{(char)SeIconChar.BoxedLetterT}")
+            .PopColorType()
+            .AddText($" {text}");
+        return builder.Build();
     }
 
     #endregion
